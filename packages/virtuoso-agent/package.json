@@ -1,0 +1,44 @@
+{
+	"name": "@lzy23321/virtuoso-agent",
+	"version": "0.0.0",
+	"description": "Virtuoso automation tools for pi agent and CLI workflows",
+	"type": "module",
+	"private": true,
+	"main": "./dist/index.js",
+	"types": "./dist/index.d.ts",
+	"exports": {
+		".": {
+			"types": "./dist/index.d.ts",
+			"import": "./dist/index.js"
+		},
+		"./extension": {
+			"types": "./dist/extension/index.d.ts",
+			"import": "./dist/extension/index.js"
+		}
+	},
+	"pi": {
+		"extensions": ["./dist/extension/index.js"],
+		"skills": ["./skills"],
+		"prompts": ["./prompts"]
+	},
+	"scripts": {
+		"clean": "shx rm -rf dist",
+		"build": "tsgo -p tsconfig.build.json",
+		"test": "vitest --run"
+	},
+	"dependencies": {
+		"@earendil-works/pi-ai": "^0.75.5",
+		"@earendil-works/pi-coding-agent": "^0.75.5",
+		"typebox": "1.1.38"
+	},
+	"devDependencies": {
+		"@types/node": "24.12.4",
+		"typescript": "5.9.3",
+		"vitest": "3.2.4"
+	},
+	"keywords": ["pi-package", "virtuoso", "cadence", "eda", "agent"],
+	"license": "MIT",
+	"engines": {
+		"node": ">=22.19.0"
+	}
+}
