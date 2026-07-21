@@ -64,6 +64,20 @@ describe("process runner", () => {
 		}
 	});
 
+	it("runs a real child process with the default executor", async () => {
+		const result = await runProcess({
+			command: "/bin/echo",
+			args: ["-n", "ok"],
+			cwd: "/tmp",
+		});
+
+		expect(result.ok).toBe(true);
+		if (result.ok) {
+			expect(result.value.exitCode).toBe(0);
+			expect(result.value.stdout).toBe("ok");
+		}
+	});
+
 	it("preserves non-zero exit codes as structured process results", async () => {
 		const executor: ProcessExecutor = {
 			async run(request) {

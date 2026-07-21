@@ -88,12 +88,40 @@ const nodeProcessExecutor: ProcessExecutor = {
 			});
 			let stdout = "";
 			let stderr = "";
+			let settled = false;
+			let exitFallback: ReturnType<typeof setTimeout> | undefined;
+
+			const finish = (exitCode: number | null) => {
+				if (settled) {
+					return;
+				}
+				settled = true;
+				if (timeout) {
+					clearTimeout(timeout);
+				}
+				if (exitFallback) {
+					clearTimeout(exitFallback);
+				}
+				child.stdout?.destroy();
+				child.stderr?.destroy();
+				resolve({
+					command: [request.command, ...request.args],
+					cwd: request.cwd,
+					exitCode,
+					stdout,
+					stderr,
+					startedAt,
+					endedAt: new Date().toISOString(),
+					dryRun: false,
+				});
+			};
 
 			const timeout =
 				request.timeoutMs === undefined
 					? undefined
 					: setTimeout(() => {
 							child.kill("SIGTERM");
+							exitFallback = setTimeout(() => finish(null), 1_000);
 						}, request.timeoutMs);
 
 			child.stdout?.setEncoding("utf8");
@@ -107,20 +135,14 @@ const nodeProcessExecutor: ProcessExecutor = {
 			child.on("error", (error) => {
 				stderr += error.message;
 			});
+			child.on("exit", (exitCode) => {
+				// Cadence launchers can leave inherited stdout/stderr descriptors open
+				// after the process itself exits. Give buffered output a short drain
+				// window, then finish even if Node never receives the close event.
+				exitFallback = setTimeout(() => finish(exitCode), 250);
+			});
 			child.on("close", (exitCode) => {
-				if (timeout) {
-					clearTimeout(timeout);
-				}
-				resolve({
-					command: [request.command, ...request.args],
-					cwd: request.cwd,
-					exitCode,
-					stdout,
-					stderr,
-					startedAt,
-					endedAt: new Date().toISOString(),
-					dryRun: false,
-				});
+				setTimeout(() => finish(exitCode), 0);
 			});
 		});
 	},

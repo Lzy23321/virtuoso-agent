@@ -1,86 +1,304 @@
 #!/usr/bin/env node
-/**
- * main.ts 文件是给终端用的，而这个文件是给 pi agent 用的，
- * 目的是将 Virtuoso 工具注册到 pi agent 中，使得 LLM
- * 可以调用这些工具来检查状态、验证任务文件和运行任务。
- * 终端cli使用命令行调用，是main.ts的职责范围，而pi agent 调用工具是这个文件的职责范围。
- */
 
+import { resolve } from "node:path";
 import { Type } from "@earendil-works/pi-ai";
 import { defineTool, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { getVirtuosoStatus, runTask, validateTaskFile } from "../index.ts";
+import {
+	compactAgentOutput,
+	getManagedCurrentCellView,
+	getManagedVirtuosoInstances,
+	inspectManagedVirtuosoMaestro,
+	listManagedVirtuosoLibraries,
+	listManagedVirtuosoLibraryCellViews,
+	runTask,
+	showManagedVirtuosoCellView,
+	startVirtuosoUiSession,
+	validateTaskFile,
+} from "../index.ts";
 
-/**
- * 这个文件只注册委托到 `src/runtime` 的 Virtuoso 工具。
- * 任何直接连接到 Virtuoso、解析 Spectre 日志或实现优化逻辑的工具都不应该在这里注册。
- * 这些都属于 `src/runtime` 的职责范围。
- * 通过保持工具层的薄弱，我们可以更容易地测试和维护代码，并且在未来如果需要更改底层实现时不会影响到工具接口。
- */
+const managedInstanceParameters = {
+	instanceId: Type.Optional(
+		Type.String({
+			description: "Managed instance ID. A successful explicit selection becomes this pi session's binding.",
+		}),
+	),
+	cdsLib: Type.Optional(
+		Type.String({ description: "Optional cds.lib path used to select one matching managed instance." }),
+	),
+	timeoutMs: Type.Optional(Type.Number({ description: "Operation timeout in milliseconds." })),
+};
 
-// 定义一个工具来检查 Virtuoso 的状态是否正常。
-const statusTool = defineTool({
-	name: "virtuoso_status",
-	label: "Virtuoso Status",
-	description: "Check whether the Virtuoso automation runtime is available.",
-	parameters: Type.Object({}),
-	async execute() {
-		const status = await getVirtuosoStatus();
-		return {
-			content: [{ type: "text", text: status.message }],
-			details: status,
-		};
-	},
-});
-
-// 定义一个工具来验证 Virtuoso 任务文件的正确性。
-const taskValidateTool = defineTool({
-	name: "virtuoso_task_validate",
-	label: "Validate Virtuoso Task",
-	description: "Validate a Virtuoso task file without running simulation.",
-	parameters: Type.Object({
-		path: Type.String({ description: "Path to a task JSON file." }),
-	}),
-	async execute(_toolCallId, params) {
-		const result = await validateTaskFile(params.path);
-		return {
-			content: [{ type: "text", text: result.ok ? "Task validation finished." : result.error.message }],
-			details: result,
-		};
-	},
-});
-
-// 运行一个 Virtuoso task 工作流，并返回指标、优化建议和产物路径。
-const runTaskTool = defineTool({
-	name: "virtuoso_run_task",
-	label: "Run Virtuoso Task",
-	description: "Run a Virtuoso task workflow and return metrics, proposal, and artifact paths.",
-	parameters: Type.Object({
-		path: Type.String({ description: "Path to a task JSON file." }),
-	}),
-	async execute(_toolCallId, params) {
-		const result = await runTask(params.path);
-		return {
-			content: [{ type: "text", text: result.ok ? `Task finished: ${result.value.jobId}` : result.error.message }],
-			details: result,
-		};
-	},
-});
-
-// 导出一个函数来注册工具到 pi agent 中。
 export default function (pi: ExtensionAPI) {
-	// 前文只是定义了工具，还没有注册到 pi agent。
-	// 注册工具使其对 LLM 可见，
-	// 模型就可以像调用内置工具（如 read/bash/edit/write）一样调用它。
-	pi.registerTool(statusTool);
-	pi.registerTool(taskValidateTool);
-	pi.registerTool(runTaskTool);
-	// 未来如果需要添加更多工具，只需在这里定义并注册即可。
+	let boundInstanceId: string | undefined;
 
-	// 这一段是在在监听工具调用事件，每次 agent 准备调用工具时，这里都有机会拦截或加权限控制。
-	pi.on("tool_call", async (event, _ctx) => {
-		if (!event.toolName.startsWith("virtuoso_")) {
-			return undefined; // 只处理以 "virtuoso_" 开头的工具调用，其他工具调用不受影响。
-		}
-		return undefined; // 目前没有特殊权限控制，直接允许调用。未来可以在这里添加权限检查逻辑。
+	const instancesTool = defineTool({
+		name: "virtuoso_instances",
+		label: "Managed Virtuoso Instances",
+		description: "List live bridge-managed Virtuoso instances and the instance bound to this pi session.",
+		parameters: Type.Object({}),
+		async execute() {
+			const result = await getManagedVirtuosoInstances();
+			if (
+				result.ok &&
+				boundInstanceId &&
+				!result.value.some((instance) => instance.instanceId === boundInstanceId)
+			) {
+				boundInstanceId = undefined;
+			}
+			const text = result.ok
+				? result.value.length === 0
+					? "No live virtuoso-agent managed instances are registered."
+					: `Found ${result.value.length} live managed Virtuoso instance(s): ${result.value
+							.map((instance) => `${instance.instanceId} (${instance.cdsLib ?? instance.cwd})`)
+							.join(", ")}. Bound instance: ${boundInstanceId ?? "none"}.`
+				: result.error.message;
+			const details = result.ok ? { ok: true, value: { boundInstanceId, instances: result.value } } : result;
+			return { content: [{ type: "text", text }], details: compactAgentOutput(details) };
+		},
 	});
+
+	const launchInstanceTool = defineTool({
+		name: "virtuoso_instance_launch",
+		label: "Launch Managed Virtuoso Instance",
+		description:
+			"Explicitly launch one visible Virtuoso instance with the bridge, wait for readiness, and bind this pi session to it. Do not call without user authorization when no instance exists.",
+		parameters: Type.Object({
+			cdsLib: Type.String({ description: "Absolute path to cds.lib." }),
+			workDir: Type.Optional(Type.String({ description: "Optional project working directory." })),
+			display: Type.Optional(Type.String({ description: "X11 display such as :1; inherited when omitted." })),
+			xAuthority: Type.Optional(
+				Type.String({
+					description: "X11 authority file matching display; inherited from XAUTHORITY when omitted.",
+				}),
+			),
+			waylandDisplay: Type.Optional(
+				Type.String({ description: "Wayland display inherited by the launched process when applicable." }),
+			),
+			xdgRuntimeDir: Type.Optional(
+				Type.String({ description: "Desktop runtime directory; inherited from XDG_RUNTIME_DIR when omitted." }),
+			),
+			virtuosoBin: Type.Optional(Type.String({ description: "Optional Virtuoso executable path." })),
+			readyTimeoutMs: Type.Optional(Type.Number({ description: "Bridge readiness timeout in milliseconds." })),
+		}),
+		async execute(_toolCallId, params) {
+			const existing = await getManagedVirtuosoInstances();
+			if (!existing.ok) {
+				return {
+					content: [{ type: "text", text: existing.error.message }],
+					details: compactAgentOutput(existing) as unknown,
+				};
+			}
+			const matches = existing.value.filter(
+				(instance) =>
+					instance.mode === "ui" && instance.cdsLib && resolve(instance.cdsLib) === resolve(params.cdsLib),
+			);
+			if (matches.length > 1) {
+				return {
+					content: [
+						{
+							type: "text",
+							text: `Multiple managed Virtuoso instances already use this cds.lib: ${matches.map((item) => item.instanceId).join(", ")}. Retry the intended operation with one instanceId.`,
+						},
+					],
+					details: compactAgentOutput({
+						ok: false,
+						type: "virtuoso_instance_selection_required",
+						candidates: matches,
+					}) as unknown,
+				};
+			}
+			if (matches.length === 1) {
+				boundInstanceId = matches[0].instanceId;
+				return {
+					content: [
+						{
+							type: "text",
+							text: `Reused and bound existing managed Virtuoso instance ${matches[0].instanceId}.`,
+						},
+					],
+					details: compactAgentOutput({ ok: true, instance: matches[0], reused: true }) as unknown,
+				};
+			}
+			const result = await startVirtuosoUiSession(params);
+			if (result.ok) {
+				boundInstanceId = result.value.instanceId;
+			}
+			return {
+				content: [
+					{
+						type: "text",
+						text: result.ok
+							? `Managed Virtuoso instance ${result.value.instanceId} is ready and bound to this pi session.`
+							: result.error.message,
+					},
+				],
+				details: compactAgentOutput(result) as unknown,
+			};
+		},
+	});
+
+	const inventoryTool = defineTool({
+		name: "virtuoso_inventory",
+		label: "Inspect Virtuoso Inventory",
+		description:
+			"List library summaries or the cells and views in one library through a live managed instance. Use only when discovery is needed.",
+		parameters: Type.Union([
+			Type.Object({
+				action: Type.Literal("libraries"),
+				...managedInstanceParameters,
+			}),
+			Type.Object({
+				action: Type.Literal("cellviews"),
+				library: Type.String({ description: "Library name." }),
+				...managedInstanceParameters,
+			}),
+		]),
+		async execute(_toolCallId, params) {
+			if (params.action === "libraries") {
+				const result = await listManagedVirtuosoLibraries({
+					...params,
+					instanceId: params.instanceId ?? boundInstanceId,
+				});
+				if (result.ok) {
+					boundInstanceId = result.value.instance.instanceId;
+				}
+				const text = result.ok
+					? `Inventory libraries saved: ${result.value.summary.counts.libraries} libraries, ${result.value.summary.counts.cells} cells, ${result.value.summary.counts.views} views. Artifact: ${result.value.artifact.path}`
+					: result.error.message;
+				return { content: [{ type: "text", text }], details: compactAgentOutput(result) as unknown };
+			}
+
+			const result = await listManagedVirtuosoLibraryCellViews({
+				...params,
+				instanceId: params.instanceId ?? boundInstanceId,
+			});
+			if (result.ok) {
+				boundInstanceId = result.value.instance.instanceId;
+			}
+			const text = result.ok
+				? `Inventory cellviews saved: ${result.value.summary.library.name}, ${result.value.summary.library.counts.cells} cells, ${result.value.summary.library.counts.views} views. Artifact: ${result.value.artifact.path}`
+				: result.error.message;
+			return { content: [{ type: "text", text }], details: compactAgentOutput(result) as unknown };
+		},
+	});
+
+	const cellViewTool = defineTool({
+		name: "virtuoso_cellview",
+		label: "Operate on Virtuoso CellView",
+		description:
+			"Read the active cellView or show a specified cellView in a live managed Virtuoso UI. Never starts a new process.",
+		parameters: Type.Union([
+			Type.Object({
+				action: Type.Literal("current"),
+				...managedInstanceParameters,
+			}),
+			Type.Object({
+				action: Type.Literal("show"),
+				library: Type.String(),
+				cell: Type.String(),
+				view: Type.String(),
+				mode: Type.Optional(Type.Union([Type.Literal("r"), Type.Literal("a"), Type.Literal("w")])),
+				...managedInstanceParameters,
+			}),
+		]),
+		async execute(_toolCallId, params) {
+			if (params.action === "current") {
+				const result = await getManagedCurrentCellView({
+					...params,
+					instanceId: params.instanceId ?? boundInstanceId,
+				});
+				if (result.ok) {
+					boundInstanceId = result.value.instance.instanceId;
+				}
+				return {
+					content: [
+						{
+							type: "text",
+							text: result.ok
+								? `Current cellView: ${result.value.value.library}/${result.value.value.cell}/${result.value.value.view}.`
+								: result.error.message,
+						},
+					],
+					details: compactAgentOutput(result) as unknown,
+				};
+			}
+
+			const result = await showManagedVirtuosoCellView({
+				...params,
+				instanceId: params.instanceId ?? boundInstanceId,
+			});
+			if (result.ok) {
+				boundInstanceId = result.value.instance.instanceId;
+			}
+			return {
+				content: [
+					{
+						type: "text",
+						text: result.ok
+							? `Displayed ${params.library}/${params.cell}/${params.view} in managed instance ${result.value.instance.instanceId}.`
+							: result.error.message,
+					},
+				],
+				details: compactAgentOutput(result) as unknown,
+			};
+		},
+	});
+
+	const inspectMaestroTool = defineTool({
+		name: "virtuoso_inspect_maestro",
+		label: "Inspect Virtuoso Maestro",
+		description: "Inspect one Maestro setup through a live managed Virtuoso instance and save the manifest.",
+		parameters: Type.Object({
+			library: Type.String(),
+			cell: Type.String(),
+			view: Type.String(),
+			...managedInstanceParameters,
+		}),
+		async execute(_toolCallId, params) {
+			const result = await inspectManagedVirtuosoMaestro({
+				...params,
+				instanceId: params.instanceId ?? boundInstanceId,
+			});
+			if (result.ok) {
+				boundInstanceId = result.value.instance.instanceId;
+			}
+			const text = result.ok
+				? `Maestro inspect saved: ${params.library}/${params.cell}/${params.view}, ${result.value.summary.counts.tests} tests, ${result.value.summary.counts.analysisEntries} analyses, ${result.value.summary.counts.outputs} outputs. Artifact: ${result.value.artifact.path}`
+				: result.error.message;
+			return { content: [{ type: "text", text }], details: compactAgentOutput(result) };
+		},
+	});
+
+	const taskTool = defineTool({
+		name: "virtuoso_task",
+		label: "Validate or Run Virtuoso Task",
+		description: "Validate a Virtuoso task file or run its workflow and return metrics, proposal, and artifacts.",
+		parameters: Type.Union([
+			Type.Object({ action: Type.Literal("validate"), path: Type.String() }),
+			Type.Object({ action: Type.Literal("run"), path: Type.String() }),
+		]),
+		async execute(_toolCallId, params) {
+			if (params.action === "validate") {
+				const result = await validateTaskFile(params.path);
+				return {
+					content: [{ type: "text", text: result.ok ? "Task validation finished." : result.error.message }],
+					details: compactAgentOutput(result) as unknown,
+				};
+			}
+			const result = await runTask(params.path);
+			return {
+				content: [
+					{ type: "text", text: result.ok ? `Task finished: ${result.value.jobId}` : result.error.message },
+				],
+				details: compactAgentOutput(result) as unknown,
+			};
+		},
+	});
+
+	pi.registerTool(instancesTool);
+	pi.registerTool(launchInstanceTool);
+	pi.registerTool(inventoryTool);
+	pi.registerTool(cellViewTool);
+	pi.registerTool(inspectMaestroTool);
+	pi.registerTool(taskTool);
 }
