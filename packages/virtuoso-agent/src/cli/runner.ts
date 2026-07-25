@@ -9,19 +9,20 @@
 
 import {
 	compactAgentOutput,
-	getCurrentVirtuosoCellView,
-	getVirtuosoInstanceParameters,
-	inspectVirtuosoMaestro,
-	listVirtuosoInstances,
-	listVirtuosoLibraries,
-	listVirtuosoLibraryCellViews,
-	openVirtuosoCellView,
+	getManagedCurrentCellView,
+	getManagedVirtuosoInstanceParameters,
+	getManagedVirtuosoInstances,
+	inspectManagedVirtuosoMaestro,
+	inspectManagedVirtuosoSchematic,
+	listManagedVirtuosoCellViewInstances,
+	listManagedVirtuosoLibraries,
+	listManagedVirtuosoLibraryCellViews,
+	type ManagedVirtuosoRequest,
 	type RunTaskOptions,
 	runTask,
-	showVirtuosoCellView,
+	showManagedVirtuosoCellView,
 	showVirtuosoCellViewInSession,
 	startVirtuosoUiSession,
-	summarizeVirtuosoCellView,
 	type VirtuosoBridgeOptions,
 	type VirtuosoSessionOptions,
 	validateTaskFile,
@@ -50,15 +51,17 @@ const consoleIo: CliIo = {
 /**
  * 执行 CLI 命令，并返回进程应该使用的 exit code。
  *
- * 目前 scaffold 阶段只支持三个命令：
- * - `vab task validate <task.json> --json`
- * - `vab run <task.json> --json`
+ * 这里仍然只负责命令解析和结果呈现。读取 Virtuoso 状态的命令默认复用
+ * managed session；task 执行、桥接和结果校验继续由 runtime 负责。
  *
- * 注意：这里暂时没有拆出 `args.ts`。命令数量还很少，提前引入一套参数解析层
- * 会让结构变重。等后续出现更多 option，例如 `--dry-run`、`--job-dir`、
- * `--backend spectre`，再拆 `src/cli/args.ts` 会更自然。
+ * 参数解析暂时保留在本文件。等 option 和子命令继续增长时，再把纯解析逻辑
+ * 移入 `src/cli/args.ts`，不会改变 runtime API。
  */
 export async function runCli(argv: string[], io: CliIo = consoleIo): Promise<number> {
+	if (argv.includes("--help") || argv.includes("-h")) {
+		writeUsage(io, true);
+		return 0;
+	}
 	const includeProcessOutput = argv.includes("--include-process-output");
 	const sessionStartCommand = parseSessionStartCommand(argv);
 	if (sessionStartCommand.ok) {
@@ -68,6 +71,18 @@ export async function runCli(argv: string[], io: CliIo = consoleIo): Promise<num
 	}
 	if (sessionStartCommand.error) {
 		io.stderr(`Error: ${sessionStartCommand.error}`);
+		writeUsage(io);
+		return 1;
+	}
+
+	const sessionListCommand = parseSessionListCommand(argv);
+	if (sessionListCommand.ok) {
+		const result = await getManagedVirtuosoInstances({ registryDir: sessionListCommand.registryDir });
+		writeJson(io, result, includeProcessOutput);
+		return result.ok ? 0 : 1;
+	}
+	if (sessionListCommand.error) {
+		io.stderr(`Error: ${sessionListCommand.error}`);
 		writeUsage(io);
 		return 1;
 	}
@@ -86,7 +101,7 @@ export async function runCli(argv: string[], io: CliIo = consoleIo): Promise<num
 
 	const openCellViewCommand = parseOpenCellViewCommand(argv);
 	if (openCellViewCommand.ok) {
-		const result = await openVirtuosoCellView(openCellViewCommand.request);
+		const result = await showManagedVirtuosoCellView(openCellViewCommand.request);
 		writeJson(io, result, includeProcessOutput);
 		return result.ok ? 0 : 1;
 	}
@@ -98,7 +113,7 @@ export async function runCli(argv: string[], io: CliIo = consoleIo): Promise<num
 
 	const currentCellViewCommand = parseCurrentCellViewCommand(argv);
 	if (currentCellViewCommand.ok) {
-		const result = await getCurrentVirtuosoCellView(currentCellViewCommand.options);
+		const result = await getManagedCurrentCellView(currentCellViewCommand.options);
 		writeJson(io, result, includeProcessOutput);
 		return result.ok ? 0 : 1;
 	}
@@ -110,7 +125,7 @@ export async function runCli(argv: string[], io: CliIo = consoleIo): Promise<num
 
 	const inventoryLibrariesCommand = parseInventoryLibrariesCommand(argv);
 	if (inventoryLibrariesCommand.ok) {
-		const result = await listVirtuosoLibraries(inventoryLibrariesCommand.options);
+		const result = await listManagedVirtuosoLibraries(inventoryLibrariesCommand.options);
 		writeJson(io, result, includeProcessOutput);
 		return result.ok ? 0 : 1;
 	}
@@ -122,7 +137,7 @@ export async function runCli(argv: string[], io: CliIo = consoleIo): Promise<num
 
 	const inventoryCellViewsCommand = parseInventoryCellViewsCommand(argv);
 	if (inventoryCellViewsCommand.ok) {
-		const result = await listVirtuosoLibraryCellViews(inventoryCellViewsCommand.request);
+		const result = await listManagedVirtuosoLibraryCellViews(inventoryCellViewsCommand.request);
 		writeJson(io, result, includeProcessOutput);
 		return result.ok ? 0 : 1;
 	}
@@ -134,7 +149,7 @@ export async function runCli(argv: string[], io: CliIo = consoleIo): Promise<num
 
 	const maestroInspectCommand = parseMaestroInspectCommand(argv);
 	if (maestroInspectCommand.ok) {
-		const result = await inspectVirtuosoMaestro(maestroInspectCommand.request);
+		const result = await inspectManagedVirtuosoMaestro(maestroInspectCommand.request);
 		writeJson(io, result, includeProcessOutput);
 		return result.ok ? 0 : 1;
 	}
@@ -144,9 +159,21 @@ export async function runCli(argv: string[], io: CliIo = consoleIo): Promise<num
 		return 1;
 	}
 
+	const schematicInspectCommand = parseSchematicInspectCommand(argv);
+	if (schematicInspectCommand.ok) {
+		const result = await inspectManagedVirtuosoSchematic(schematicInspectCommand.request);
+		writeJson(io, result, includeProcessOutput);
+		return result.ok ? 0 : 1;
+	}
+	if (schematicInspectCommand.error) {
+		io.stderr(`Error: ${schematicInspectCommand.error}`);
+		writeUsage(io);
+		return 1;
+	}
+
 	const listInstancesCommand = parseListInstancesCommand(argv);
 	if (listInstancesCommand.ok) {
-		const result = await listVirtuosoInstances(listInstancesCommand.request);
+		const result = await listManagedVirtuosoCellViewInstances(listInstancesCommand.request);
 		writeJson(io, result, includeProcessOutput);
 		return result.ok ? 0 : 1;
 	}
@@ -156,21 +183,9 @@ export async function runCli(argv: string[], io: CliIo = consoleIo): Promise<num
 		return 1;
 	}
 
-	const summarizeCellViewCommand = parseSummarizeCellViewCommand(argv);
-	if (summarizeCellViewCommand.ok) {
-		const result = await summarizeVirtuosoCellView(summarizeCellViewCommand.request);
-		writeJson(io, result, includeProcessOutput);
-		return result.ok ? 0 : 1;
-	}
-	if (summarizeCellViewCommand.error) {
-		io.stderr(`Error: ${summarizeCellViewCommand.error}`);
-		writeUsage(io);
-		return 1;
-	}
-
 	const instanceParametersCommand = parseInstanceParametersCommand(argv);
 	if (instanceParametersCommand.ok) {
-		const result = await getVirtuosoInstanceParameters(instanceParametersCommand.request);
+		const result = await getManagedVirtuosoInstanceParameters(instanceParametersCommand.request);
 		writeJson(io, result, includeProcessOutput);
 		return result.ok ? 0 : 1;
 	}
@@ -182,7 +197,7 @@ export async function runCli(argv: string[], io: CliIo = consoleIo): Promise<num
 
 	const showCellViewCommand = parseShowCellViewCommand(argv);
 	if (showCellViewCommand.ok) {
-		const result = await showVirtuosoCellView(showCellViewCommand.request);
+		const result = await showManagedVirtuosoCellView(showCellViewCommand.request);
 		writeJson(io, result, includeProcessOutput);
 		return result.ok ? 0 : 1;
 	}
@@ -239,6 +254,11 @@ interface ParsedSessionStartCommand {
 	options: VirtuosoSessionOptions;
 }
 
+interface ParsedSessionListCommand {
+	ok: true;
+	registryDir?: string;
+}
+
 interface ParsedSessionShowCellViewCommand {
 	ok: true;
 	request: {
@@ -253,7 +273,7 @@ interface ParsedSessionShowCellViewCommand {
 
 interface ParsedOpenCellViewCommand {
 	ok: true;
-	request: VirtuosoBridgeOptions & {
+	request: ManagedVirtuosoRequest & {
 		library: string;
 		cell: string;
 		view: string;
@@ -263,7 +283,7 @@ interface ParsedOpenCellViewCommand {
 
 interface ParsedShowCellViewCommand {
 	ok: true;
-	request: VirtuosoBridgeOptions & {
+	request: ManagedVirtuosoRequest & {
 		library: string;
 		cell: string;
 		view: string;
@@ -273,24 +293,24 @@ interface ParsedShowCellViewCommand {
 
 interface ParsedCurrentCellViewCommand {
 	ok: true;
-	options: VirtuosoBridgeOptions;
+	options: ManagedVirtuosoRequest;
 }
 
 interface ParsedInventoryLibrariesCommand {
 	ok: true;
-	options: VirtuosoBridgeOptions;
+	options: ManagedVirtuosoRequest;
 }
 
 interface ParsedInventoryCellViewsCommand {
 	ok: true;
-	request: VirtuosoBridgeOptions & {
+	request: ManagedVirtuosoRequest & {
 		library: string;
 	};
 }
 
 interface ParsedInspectCellViewCommand {
 	ok: true;
-	request: VirtuosoBridgeOptions & {
+	request: ManagedVirtuosoRequest & {
 		library: string;
 		cell: string;
 		view: string;
@@ -300,7 +320,7 @@ interface ParsedInspectCellViewCommand {
 
 interface ParsedListInstancesCommand {
 	ok: true;
-	request: VirtuosoBridgeOptions & {
+	request: ManagedVirtuosoRequest & {
 		library: string;
 		cell: string;
 		view: string;
@@ -310,21 +330,11 @@ interface ParsedListInstancesCommand {
 
 interface ParsedInstanceParametersCommand {
 	ok: true;
-	request: VirtuosoBridgeOptions & {
+	request: ManagedVirtuosoRequest & {
 		library: string;
 		cell: string;
 		view: string;
 		instanceName: string;
-		mode?: "r" | "a" | "w";
-	};
-}
-
-interface ParsedSummarizeCellViewCommand {
-	ok: true;
-	request: VirtuosoBridgeOptions & {
-		library: string;
-		cell: string;
-		view: string;
 		mode?: "r" | "a" | "w";
 	};
 }
@@ -366,8 +376,22 @@ function parseSessionStartCommand(argv: string[]): ParsedSessionStartCommand | I
 		options: {
 			...options.value,
 			sessionDir: getOptionValue(argv, "--session-dir"),
+			instanceId: getOptionValue(argv, "--instance-id"),
+			registryDir: getOptionValue(argv, "--registry-dir"),
 		},
 	};
+}
+
+function parseSessionListCommand(argv: string[]): ParsedSessionListCommand | IgnoredCommand {
+	const [command, action] = argv;
+	if (command !== "session" || action !== "list") {
+		return { ok: false };
+	}
+	const options = parseManagedVirtuosoOptions(argv.slice(2));
+	if (!options.ok) {
+		return options;
+	}
+	return { ok: true, registryDir: options.value.registryDir };
 }
 
 function parseSessionShowCellViewCommand(argv: string[]): ParsedSessionShowCellViewCommand | IgnoredCommand {
@@ -401,7 +425,7 @@ function parseOpenCellViewCommand(argv: string[]): ParsedOpenCellViewCommand | I
 	if (command !== "cellview" || action !== "open") {
 		return { ok: false };
 	}
-	return parseCellViewRefCommand(argv, "cellview open");
+	return parseManagedCellViewRefCommand(argv, "cellview open");
 }
 
 function parseCurrentCellViewCommand(argv: string[]): ParsedCurrentCellViewCommand | IgnoredCommand {
@@ -409,7 +433,7 @@ function parseCurrentCellViewCommand(argv: string[]): ParsedCurrentCellViewComma
 	if (command !== "cellview" || action !== "current") {
 		return { ok: false };
 	}
-	const options = parseVirtuosoBridgeOptions(argv.slice(2));
+	const options = parseManagedVirtuosoOptions(argv.slice(2));
 	if (!options.ok) {
 		return options;
 	}
@@ -421,7 +445,7 @@ function parseInventoryLibrariesCommand(argv: string[]): ParsedInventoryLibrarie
 	if (command !== "inventory" || action !== "libraries") {
 		return { ok: false };
 	}
-	const options = parseVirtuosoBridgeOptions(argv.slice(2));
+	const options = parseManagedVirtuosoOptions(argv.slice(2));
 	if (!options.ok) {
 		return options;
 	}
@@ -433,7 +457,7 @@ function parseInventoryCellViewsCommand(argv: string[]): ParsedInventoryCellView
 	if (command !== "inventory" || action !== "cellviews") {
 		return { ok: false };
 	}
-	const options = parseVirtuosoBridgeOptions(argv.slice(2));
+	const options = parseManagedVirtuosoOptions(argv.slice(2));
 	if (!options.ok) {
 		return options;
 	}
@@ -455,7 +479,15 @@ function parseMaestroInspectCommand(argv: string[]): ParsedInspectCellViewComman
 	if (command !== "maestro" || action !== "inspect") {
 		return { ok: false };
 	}
-	return parseCellViewRefCommand(argv, "maestro inspect");
+	return parseManagedCellViewRefCommand(argv, "maestro inspect");
+}
+
+function parseSchematicInspectCommand(argv: string[]): ParsedInspectCellViewCommand | IgnoredCommand {
+	const [command, action] = argv;
+	if (command !== "schematic" || action !== "inspect") {
+		return { ok: false };
+	}
+	return parseManagedCellViewRefCommand(argv, "schematic inspect");
 }
 
 function parseListInstancesCommand(argv: string[]): ParsedListInstancesCommand | IgnoredCommand {
@@ -463,15 +495,7 @@ function parseListInstancesCommand(argv: string[]): ParsedListInstancesCommand |
 	if (command !== "cellview" || action !== "instances") {
 		return { ok: false };
 	}
-	return parseCellViewRefCommand(argv, "cellview instances");
-}
-
-function parseSummarizeCellViewCommand(argv: string[]): ParsedSummarizeCellViewCommand | IgnoredCommand {
-	const [command, action] = argv;
-	if (command !== "cellview" || action !== "summary") {
-		return { ok: false };
-	}
-	return parseCellViewRefCommand(argv, "cellview summary");
+	return parseManagedCellViewRefCommand(argv, "cellview instances");
 }
 
 function parseInstanceParametersCommand(argv: string[]): ParsedInstanceParametersCommand | IgnoredCommand {
@@ -479,7 +503,7 @@ function parseInstanceParametersCommand(argv: string[]): ParsedInstanceParameter
 	if (command !== "instance" || action !== "params") {
 		return { ok: false };
 	}
-	const parsed = parseCellViewRefCommand(argv, "instance params");
+	const parsed = parseManagedCellViewRefCommand(argv, "instance params");
 	if (!parsed.ok) {
 		return parsed;
 	}
@@ -501,7 +525,15 @@ function parseShowCellViewCommand(argv: string[]): ParsedShowCellViewCommand | I
 	if (command !== "cellview" || action !== "show") {
 		return { ok: false };
 	}
-	return parseCellViewRefCommand(argv, "cellview show");
+	return parseManagedCellViewRefCommand(argv, "cellview show");
+}
+
+function parseManagedCellViewRefCommand(argv: string[], label: string): ParsedInspectCellViewCommand | IgnoredCommand {
+	const options = parseManagedVirtuosoOptions(argv.slice(2));
+	if (!options.ok) {
+		return options;
+	}
+	return createParsedCellViewRef(argv, label, options.value);
 }
 
 function parseCellViewRefCommand(
@@ -513,7 +545,16 @@ function parseCellViewRefCommand(
 	if (!options.ok) {
 		return options;
 	}
+	return createParsedCellViewRef(argv, label, options.value);
+}
 
+function createParsedCellViewRef<TOptions extends ManagedVirtuosoRequest | VirtuosoBridgeOptions>(
+	argv: string[],
+	label: string,
+	options: TOptions,
+):
+	| { ok: true; request: TOptions & { library: string; cell: string; view: string; mode?: "r" | "a" | "w" } }
+	| IgnoredCommand {
 	const library = getOptionValue(argv, "--lib");
 	const cell = getOptionValue(argv, "--cell");
 	const view = getOptionValue(argv, "--view");
@@ -534,13 +575,64 @@ function parseCellViewRefCommand(
 	return {
 		ok: true,
 		request: {
-			...options.value,
+			...options,
 			library,
 			cell,
 			view,
 			mode,
 		},
 	};
+}
+
+function parseManagedVirtuosoOptions(args: string[]): { ok: true; value: ManagedVirtuosoRequest } | IgnoredCommand {
+	const options: ManagedVirtuosoRequest = {};
+
+	for (let index = 0; index < args.length; index++) {
+		const arg = args[index];
+		if (arg === "--lib" || arg === "--cell" || arg === "--view" || arg === "--mode" || arg === "--name") {
+			index++;
+			continue;
+		}
+		if (arg === "--json" || arg === "--include-process-output") {
+			continue;
+		}
+		if (arg === "--instance-id") {
+			const value = args[++index];
+			if (!value || value.startsWith("-")) {
+				return { ok: false, error: "--instance-id requires a value." };
+			}
+			options.instanceId = value;
+			continue;
+		}
+		if (arg === "--cds-lib") {
+			const value = args[++index];
+			if (!value || value.startsWith("-")) {
+				return { ok: false, error: "--cds-lib requires a value." };
+			}
+			options.cdsLib = value;
+			continue;
+		}
+		if (arg === "--registry-dir") {
+			const value = args[++index];
+			if (!value || value.startsWith("-")) {
+				return { ok: false, error: "--registry-dir requires a value." };
+			}
+			options.registryDir = value;
+			continue;
+		}
+		if (arg === "--timeout-ms") {
+			const value = args[++index];
+			const timeoutMs = Number(value);
+			if (!value || value.startsWith("-") || !Number.isFinite(timeoutMs) || timeoutMs < 0) {
+				return { ok: false, error: "--timeout-ms must be a non-negative number." };
+			}
+			options.timeoutMs = timeoutMs;
+			continue;
+		}
+		return { ok: false, error: `Unknown managed Virtuoso option: ${arg}` };
+	}
+
+	return { ok: true, value: options };
 }
 
 function parseRunTaskOptions(args: string[]): { ok: true; value: RunTaskOptions } | IgnoredRunTaskCommand {
@@ -594,7 +686,9 @@ function parseVirtuosoBridgeOptions(args: string[]): { ok: true; value: Virtuoso
 			arg === "--mode" ||
 			arg === "--name" ||
 			arg === "--session-dir" ||
-			arg === "--result-file"
+			arg === "--result-file" ||
+			arg === "--instance-id" ||
+			arg === "--registry-dir"
 		) {
 			if (arg !== "--json") {
 				index++;
@@ -710,41 +804,45 @@ function writeJson(io: CliIo, value: unknown, includeProcessOutput: boolean): vo
 	io.stdout(JSON.stringify(compactAgentOutput(value, { includeProcessOutput }), null, 2));
 }
 
-function writeUsage(io: CliIo): void {
-	io.stderr("Usage:");
-	io.stderr(
-		"  vab session start --json [--cds-lib <path>] [--session-dir <dir>] [--work-dir <dir>] [--display <display>] [--xauthority <path>] [--dry-run] [--include-process-output]",
+function writeUsage(io: CliIo, toStdout = false): void {
+	const write = toStdout ? io.stdout.bind(io) : io.stderr.bind(io);
+	write("Usage:");
+	write(
+		"  vab session start --json [--cds-lib <path>] [--session-dir <dir>] [--instance-id <id>] [--registry-dir <dir>] [--work-dir <dir>] [--display <display>] [--xauthority <path>] [--dry-run]",
 	);
-	io.stderr(
+	write("  vab session list --json [--registry-dir <dir>]");
+	write(
 		"  vab session cellview show --session-dir <dir> --lib <lib> --cell <cell> --view <view> --json [--mode r|a|w] [--include-process-output]",
 	);
-	io.stderr(
-		"  vab inventory libraries --json [--cds-lib <path>] [--dry-run] [--virtuoso-bin <path>] [--bridge-path <path>] [--include-process-output]",
+	write(
+		"  vab inventory libraries --json [--instance-id <id>] [--cds-lib <path>] [--registry-dir <dir>] [--timeout-ms <ms>]",
 	);
-	io.stderr(
-		"  vab inventory cellviews --lib <lib> --json [--cds-lib <path>] [--dry-run] [--virtuoso-bin <path>] [--bridge-path <path>] [--include-process-output]",
+	write(
+		"  vab inventory cellviews --lib <lib> --json [--instance-id <id>] [--cds-lib <path>] [--registry-dir <dir>] [--timeout-ms <ms>]",
 	);
-	io.stderr(
-		"  vab maestro inspect --lib <lib> --cell <cell> --view <view> --json [--cds-lib <path>] [--dry-run] [--include-process-output]",
+	write(
+		"  vab maestro inspect --lib <lib> --cell <cell> --view <view> --json [--instance-id <id>] [--cds-lib <path>] [--registry-dir <dir>] [--timeout-ms <ms>]",
 	);
-	io.stderr(
-		"  vab cellview open --lib <lib> --cell <cell> --view <view> --json [--cds-lib <path>] [--mode r|a|w] [--dry-run] [--include-process-output]",
+	write(
+		"  vab schematic inspect --lib <lib> --cell <cell> --view <view> --json [--instance-id <id>] [--cds-lib <path>] [--registry-dir <dir>] [--timeout-ms <ms>]",
 	);
-	io.stderr("  vab cellview current --json [--cds-lib <path>] [--dry-run] [--include-process-output]");
-	io.stderr(
-		"  vab cellview instances --lib <lib> --cell <cell> --view <view> --json [--cds-lib <path>] [--mode r|a|w] [--dry-run] [--include-process-output]",
+	write(
+		"  vab cellview open --lib <lib> --cell <cell> --view <view> --json [--instance-id <id>] [--cds-lib <path>] [--registry-dir <dir>] [--mode r|a|w] [--timeout-ms <ms>]",
 	);
-	io.stderr(
-		"  vab cellview summary --lib <lib> --cell <cell> --view <view> --json [--cds-lib <path>] [--mode r|a|w] [--dry-run] [--include-process-output]",
+	write(
+		"  vab cellview current --json [--instance-id <id>] [--cds-lib <path>] [--registry-dir <dir>] [--timeout-ms <ms>]",
 	);
-	io.stderr(
-		"  vab cellview show --lib <lib> --cell <cell> --view <view> --json [--cds-lib <path>] [--mode r|a|w] [--display <display>] [--xauthority <path>] [--dry-run] [--include-process-output]",
+	write(
+		"  vab cellview instances --lib <lib> --cell <cell> --view <view> --json [--instance-id <id>] [--cds-lib <path>] [--registry-dir <dir>] [--mode r|a|w] [--timeout-ms <ms>]",
 	);
-	io.stderr(
-		"  vab instance params --lib <lib> --cell <cell> --view <view> --name <instance> --json [--cds-lib <path>] [--mode r|a|w] [--dry-run] [--include-process-output]",
+	write(
+		"  vab cellview show --lib <lib> --cell <cell> --view <view> --json [--instance-id <id>] [--cds-lib <path>] [--registry-dir <dir>] [--mode r|a|w] [--timeout-ms <ms>]",
 	);
-	io.stderr("  vab task validate <task.json> --json");
-	io.stderr(
+	write(
+		"  vab instance params --lib <lib> --cell <cell> --view <view> --name <instance> --json [--instance-id <id>] [--cds-lib <path>] [--registry-dir <dir>] [--mode r|a|w] [--timeout-ms <ms>]",
+	);
+	write("  vab task validate <task.json> --json");
+	write(
 		"  vab run <task.json> --json [--dry-run|--no-dry-run] [--spectre-bin <path>] [--jobs-root <dir>] [--include-process-output]",
 	);
 }

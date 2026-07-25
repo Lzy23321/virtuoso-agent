@@ -250,25 +250,44 @@ procedure(vaInstanceJson(inst)
 	)
 )
 
+procedure(vaInstanceListJson(cv)
+	let((items sep)
+		items = ""
+		sep = ""
+		foreach(inst cv~>instances
+			items = strcat(items sep vaInstanceJson(inst))
+			sep = ","
+		)
+		sprintf(
+			nil
+			"{\"cellView\":%s,\"instances\":[%s]}"
+			vaCellViewJson(cv)
+			items
+		)
+	)
+)
+
 procedure(vaListInstances(library cell view mode)
-	let((cv items sep)
+	let((cv)
 		cv = vaOpenCellViewOrPrintError(library cell view mode)
+		when(cv vaPrintOk(vaInstanceListJson(cv)))
+	)
+)
+
+procedure(vaSessionListInstances(library cell view mode resultPath)
+	let((openMode cv data)
+		openMode = if(mode then mode else "r")
+		cv = dbOpenCellViewByType(library cell view "" openMode)
 		if(cv then
-			items = ""
-			sep = ""
-			foreach(inst cv~>instances
-				items = strcat(items sep vaInstanceJson(inst))
-				sep = ","
-			)
-			vaPrintOk(
-				sprintf(
-					nil
-					"{\"cellView\":%s,\"instances\":[%s]}"
-					vaCellViewJson(cv)
-					items
-				)
+			data = vaOkEnvelope(vaInstanceListJson(cv))
+			dbClose(cv)
+		else
+			data = vaErrorEnvelope(
+				"CELLVIEW_OPEN_FAILED"
+				sprintf(nil "Could not open %s/%s/%s with mode %s." library cell view openMode)
 			)
 		)
+		vaSessionWriteResult(resultPath data)
 	)
 )
 
@@ -324,74 +343,13 @@ procedure(vaInstanceParametersJson(inst)
 	)
 )
 
-procedure(vaInstancePropertyJson(prop)
+procedure(vaInstanceParameterListJson(cv inst)
 	sprintf(
 		nil
-		"{\"name\":%s,\"value\":%s}"
-		vaJsonString(prop~>name)
-		vaJsonString(prop~>value)
-	)
-)
-
-procedure(vaInstancePropertiesJson(inst)
-	let((items sep value)
-		items = ""
-		sep = ""
-		foreach(prop inst~>prop
-			value = prop~>value
-			if(vaHasSummaryParameterValue(value) then
-				items = strcat(items sep vaInstancePropertyJson(prop))
-				sep = ","
-			)
-		)
-		items
-	)
-)
-
-procedure(vaSummaryParametersJson(inst)
-	vaInstancePropertiesJson(inst)
-)
-
-procedure(vaInstanceSummaryJson(inst)
-	let((master library cell view)
-		master = inst~>master
-		library = if(master then master~>libName else "")
-		cell = if(master then master~>cellName else "")
-		view = if(master then master~>viewName else "")
-		sprintf(
-			nil
-			"{\"name\":%s,\"library\":%s,\"cell\":%s,\"view\":%s,\"parameters\":[%s]}"
-			vaJsonString(inst~>name)
-			vaJsonString(library)
-			vaJsonString(cell)
-			vaJsonString(view)
-			vaSummaryParametersJson(inst)
-		)
-	)
-)
-
-procedure(vaCellViewSummary(library cell view mode)
-	let((cv items sep count)
-		cv = vaOpenCellViewOrPrintError(library cell view mode)
-		if(cv then
-			items = ""
-			sep = ""
-			count = 0
-			foreach(inst cv~>instances
-				items = strcat(items sep vaInstanceSummaryJson(inst))
-				sep = ","
-				count = count + 1
-			)
-			vaPrintOk(
-				sprintf(
-					nil
-					"{\"cellView\":%s,\"counts\":{\"instances\":%L},\"instances\":[%s]}"
-					vaCellViewJson(cv)
-					count
-					items
-				)
-			)
-		)
+		"{\"cellView\":%s,\"instance\":%s,\"parameters\":[%s]}"
+		vaCellViewJson(cv)
+		vaInstanceJson(inst)
+		vaInstanceParametersJson(inst)
 	)
 )
 
@@ -401,15 +359,7 @@ procedure(vaGetInstanceParameters(library cell view instanceName mode)
 		if(cv then
 			inst = vaFindInstance(cv instanceName)
 			if(inst then
-				vaPrintOk(
-					sprintf(
-						nil
-						"{\"cellView\":%s,\"instance\":%s,\"parameters\":[%s]}"
-						vaCellViewJson(cv)
-						vaInstanceJson(inst)
-						vaInstanceParametersJson(inst)
-					)
-				)
+				vaPrintOk(vaInstanceParameterListJson(cv inst))
 			else
 				vaPrintError(
 					"INSTANCE_NOT_FOUND"
@@ -417,6 +367,31 @@ procedure(vaGetInstanceParameters(library cell view instanceName mode)
 				)
 			)
 		)
+	)
+)
+
+procedure(vaSessionGetInstanceParameters(library cell view instanceName mode resultPath)
+	let((openMode cv inst data)
+		openMode = if(mode then mode else "r")
+		cv = dbOpenCellViewByType(library cell view "" openMode)
+		if(cv then
+			inst = vaFindInstance(cv instanceName)
+			data = if(inst then
+				vaOkEnvelope(vaInstanceParameterListJson(cv inst))
+			else
+				vaErrorEnvelope(
+					"INSTANCE_NOT_FOUND"
+					sprintf(nil "Could not find instance %s in %s/%s/%s." instanceName library cell view)
+				)
+			)
+			dbClose(cv)
+		else
+			data = vaErrorEnvelope(
+				"CELLVIEW_OPEN_FAILED"
+				sprintf(nil "Could not open %s/%s/%s with mode %s." library cell view openMode)
+			)
+		)
+		vaSessionWriteResult(resultPath data)
 	)
 )
 

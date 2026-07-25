@@ -102,7 +102,7 @@ procedure(vaMaestroSettingsJson(session testName analysisName)
         foreach(optionPair
             maeGetAnalysis(
                 testName
-                analysisName
+                vaMaestroAnalysisNameText(analysisName)
                 ?includeEmpty t
                 ?session session
             )
@@ -121,19 +121,75 @@ procedure(vaMaestroSettingsJson(session testName analysisName)
     )
 )
 
-procedure(vaMaestroAnalysesJson(session testName)
-    let((items separator analyses)
+procedure(vaMaestroAnalysisNameText(analysisName)
+    cond(
+        ((stringp analysisName) analysisName)
+        ((symbolp analysisName) symbolToString(analysisName))
+        (t sprintf(nil "%L" analysisName))
+    )
+)
+
+procedure(vaMaestroAnalysisNameMember(analysisName analyses)
+    let((target found)
+        target = vaMaestroAnalysisNameText(analysisName)
+        found = nil
+        foreach(candidate analyses
+            when(equal(target vaMaestroAnalysisNameText(candidate))
+                found = t
+            )
+        )
+        found
+    )
+)
+
+procedure(vaMaestroConfiguredAnalysisNames(session testName testSession)
+    let((candidates enabledAnalyses configured analysisText marker)
+        candidates = if(testSession then asiGetAnalysisNameList(testSession) else nil)
+        enabledAnalyses = maeGetEnabledAnalysis(testName ?session session)
+
+        ; Preserve enabled analyses even when a simulator/version does not expose
+        ; them through asiGetAnalysisNameList.
+        foreach(analysisName enabledAnalyses
+            unless(vaMaestroAnalysisNameMember(analysisName candidates)
+                candidates = append(candidates list(analysisName))
+            )
+        )
+
+        configured = nil
+        foreach(analysisName candidates
+            analysisText = vaMaestroAnalysisNameText(analysisName)
+            marker = maeGetAnalysis(
+                testName
+                analysisText
+                ?option "anaName"
+                ?session session
+            )
+            when(
+                vaMaestroMeaningful(marker) ||
+                vaMaestroAnalysisNameMember(analysisName enabledAnalyses)
+                configured = append(configured list(analysisName))
+            )
+        )
+        configured
+    )
+)
+
+procedure(vaMaestroAnalysesJson(session testName testSession)
+    let((items separator analyses enabledAnalyses analysisText)
         items = ""
         separator = ""
-        analyses = maeGetEnabledAnalysis(testName ?session session)
+        analyses = vaMaestroConfiguredAnalysisNames(session testName testSession)
+        enabledAnalyses = maeGetEnabledAnalysis(testName ?session session)
         foreach(analysisName analyses
+            analysisText = vaMaestroAnalysisNameText(analysisName)
             items = strcat(
                 items
                 separator
                 sprintf(
                     nil
-                    "{\"type\":%s,\"enabled\":true,\"effectiveSettings\":%s}"
-                    vaMaestroJsonString(analysisName)
+                    "{\"type\":%s,\"enabled\":%s,\"effectiveSettings\":%s}"
+                    vaMaestroJsonString(analysisText)
+                    vaMaestroJsonBoolean(vaMaestroAnalysisNameMember(analysisName enabledAnalyses))
                     vaMaestroSettingsJson(session testName analysisName)
                 )
             )
@@ -514,7 +570,7 @@ procedure(vaMaestroTestsJson(session mainSDB library cell view tests enabledTest
                     vaMaestroJsonValue(if(testSession then asiGetDesignCellName(testSession) else nil))
                     vaMaestroJsonValue(if(testSession then asiGetDesignViewName(testSession) else nil))
                     vaMaestroJsonValue(if(testSession then asiGetAnalogSimulator(testSession) else nil))
-                    vaMaestroAnalysesJson(session testName)
+                    vaMaestroAnalysesJson(session testName testSession)
                     vaMaestroDesignVariablesJson(testSession)
                     vaMaestroCornersJson(session mainSDB testName corners)
                     vaMaestroOutputsJson(session mainSDB testName)
@@ -604,7 +660,7 @@ procedure(vaMaestroCountTestEntries(session tests kind)
             testSession = maeGetTestSession(testName ?session session)
             values = cond(
                 (equal(kind "variables") if(testSession then asiGetDesignVarList(testSession) else nil))
-                (equal(kind "analyses") maeGetEnabledAnalysis(testName ?session session))
+                (equal(kind "analyses") vaMaestroConfiguredAnalysisNames(session testName testSession))
                 (equal(kind "outputs") nil)
                 (t nil)
             )

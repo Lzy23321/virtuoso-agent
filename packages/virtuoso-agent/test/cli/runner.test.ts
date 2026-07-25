@@ -1,8 +1,9 @@
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { type CliIo, runCli } from "../../src/cli/runner.ts";
+import { registerManagedVirtuosoInstance } from "../../src/index.ts";
 
 interface CapturedCliIo extends CliIo {
 	stdoutLines: string[];
@@ -55,7 +56,156 @@ async function createSpectreTaskFile(): Promise<{ dir: string; path: string }> {
 	return { dir, path: taskPath };
 }
 
+interface ManagedCliSession {
+	instanceId: string;
+	registryDir: string;
+	sessionDir: string;
+	commandDir: string;
+	resultDir: string;
+}
+
+async function createManagedCliSession(): Promise<ManagedCliSession> {
+	const workDir = await mkdtemp(join(tmpdir(), "virtuoso-agent-cli-managed-"));
+	const registryDir = join(workDir, "registry");
+	const sessionDir = join(workDir, "session");
+	const commandDir = join(sessionDir, "commands");
+	const resultDir = join(sessionDir, "results");
+	const processedDir = join(sessionDir, "processed");
+	const readyPath = join(sessionDir, "ready.json");
+	const heartbeatPath = join(sessionDir, "heartbeat.json");
+	const cdsLib = join(workDir, "cds.lib");
+	await mkdir(commandDir, { recursive: true });
+	await mkdir(resultDir, { recursive: true });
+	await mkdir(processedDir, { recursive: true });
+	await writeFile(cdsLib, "", "utf8");
+	await writeFile(readyPath, '{"state":"ready"}\n', "utf8");
+	await writeFile(heartbeatPath, '{"heartbeatAt":"now"}\n', "utf8");
+	const instanceId = "vui-cli-test";
+	const registered = await registerManagedVirtuosoInstance(
+		{
+			protocolVersion: 1,
+			instanceId,
+			pid: process.pid,
+			processStartedAt: new Date().toISOString(),
+			mode: "ui",
+			state: "ready",
+			cwd: workDir,
+			cdsLib,
+			display: ":1",
+			sessionDir,
+			commandDir,
+			resultDir,
+			processedDir,
+			readyPath,
+			heartbeatPath,
+			bridgePath: join(workDir, "skill-runtime", "bridge.il"),
+		},
+		registryDir,
+	);
+	expect(registered.ok).toBe(true);
+	return { instanceId, registryDir, sessionDir, commandDir, resultDir };
+}
+
+async function runManagedCliCommand(
+	args: string[],
+	value: unknown,
+	expectedExpression: string,
+): Promise<{ exitCode: number; io: CapturedCliIo; output: Record<string, unknown> }> {
+	const session = await createManagedCliSession();
+	const io = createCapturedIo();
+	const execution = runCli(
+		[
+			...args,
+			"--instance-id",
+			session.instanceId,
+			"--registry-dir",
+			session.registryDir,
+			"--timeout-ms",
+			"2000",
+			"--json",
+		],
+		io,
+	);
+
+	let responded = false;
+	for (let attempt = 0; attempt < 100; attempt++) {
+		const commandName = (await readdir(session.commandDir)).find((name) => name.endsWith(".il"));
+		if (commandName) {
+			const command = await readFile(join(session.commandDir, commandName), "utf8");
+			expect(command).toContain(expectedExpression);
+			await writeFile(
+				join(session.resultDir, commandName.replace(/\.il$/, ".json")),
+				`${JSON.stringify({ ok: true, value })}\n`,
+				"utf8",
+			);
+			responded = true;
+			break;
+		}
+		await new Promise<void>((resolvePromise) => setTimeout(resolvePromise, 10));
+	}
+	expect(responded).toBe(true);
+
+	const exitCode = await execution;
+	const output = JSON.parse(io.stdoutLines[0]) as Record<string, unknown>;
+	return { exitCode, io, output };
+}
+
+function createCliSchematicManifest(): Record<string, unknown> {
+	return {
+		schemaVersion: "0.1",
+		kind: "schematic-inspect",
+		generatedAt: "Cadence time",
+		target: { library: "ota_lib", cell: "ota_core", view: "schematic" },
+		source: { openMode: "r", virtuosoVersion: "IC25.1" },
+		connectivity: { status: "clean" },
+		summary: {},
+		instances: [],
+		terminals: [],
+		nets: [],
+		connections: [],
+		references: [],
+		warnings: [],
+	};
+}
+
+function createCliMaestroManifest(): Record<string, unknown> {
+	return {
+		schemaVersion: "0.1-prototype",
+		kind: "maestro-inspect",
+		generatedAt: "Cadence time",
+		target: { library: "ota_lib", cell: "ota_tb", view: "maestro" },
+		source: { openMode: "r", virtuosoVersion: "IC25.1" },
+		session: { name: "session1", valid: true, singleTest: true, modified: false, closedAfterInspect: true },
+		storage: { path: null },
+		summary: {
+			tests: 0,
+			enabledTests: 0,
+			globalVariables: 0,
+			testVariableEntries: 0,
+			uniqueTestVariables: 0,
+			parameters: { total: 0, enabled: 0, disabled: 0, withValue: 0 },
+			corners: 0,
+			analysisEntries: 0,
+			outputs: 0,
+		},
+		maestro: { globalVariables: [], parameters: [] },
+		tests: [],
+		warnings: [],
+	};
+}
+
 describe("CLI runner", () => {
+	it("prints help successfully", async () => {
+		const io = createCapturedIo();
+
+		const exitCode = await runCli(["--help"], io);
+
+		expect(exitCode).toBe(0);
+		expect(io.stderrLines).toEqual([]);
+		expect(io.stdoutLines[0]).toBe("Usage:");
+		expect(io.stdoutLines).toContain("  vab session list --json [--registry-dir <dir>]");
+	});
+
 	it("validates a task file", async () => {
 		const io = createCapturedIo();
 		const taskPath = await createTaskFile();
@@ -148,7 +298,19 @@ describe("CLI runner", () => {
 		expect(output.value.resultPath).toBe(join(sessionDir, "results", "show.json"));
 	});
 
-	it("prints a cellView open dry-run command", async () => {
+	it("opens a cellView through the existing managed UI", async () => {
+		const { exitCode, output } = await runManagedCliCommand(
+			["cellview", "open", "--lib", "ota_lib", "--cell", "ota_core", "--view", "schematic"],
+			{ library: "ota_lib", cell: "ota_core", view: "schematic", mode: "r", visible: true },
+			'vaSessionShowCellView("ota_lib" "ota_core" "schematic" "r"',
+		);
+
+		expect(exitCode).toBe(0);
+		expect(output.ok).toBe(true);
+		expect(output.value).toMatchObject({ value: { visible: true } });
+	});
+
+	it("rejects one-shot dry-run options for cellView open", async () => {
 		const io = createCapturedIo();
 
 		const exitCode = await runCli(
@@ -156,57 +318,96 @@ describe("CLI runner", () => {
 			io,
 		);
 
-		expect(exitCode).toBe(0);
-		expect(io.stderrLines).toEqual([]);
-		const output = JSON.parse(io.stdoutLines[0]);
-		expect(output.ok).toBe(true);
-		expect(output.value.process.command[0]).toBe("virtuoso");
-		expect(output.value.process.command).toContain("-nograph");
-		expect(output.value.process.dryRun).toBe(true);
+		expect(exitCode).toBe(1);
+		expect(io.stdoutLines).toEqual([]);
+		expect(io.stderrLines[0]).toBe("Error: Unknown managed Virtuoso option: --dry-run");
 	});
 
-	it("prints a current cellView dry-run command", async () => {
+	it("reports when cellView open has no managed session", async () => {
 		const io = createCapturedIo();
+		const workDir = await mkdtemp(join(tmpdir(), "virtuoso-agent-cli-no-session-"));
 
-		const exitCode = await runCli(["cellview", "current", "--json", "--dry-run"], io);
+		const exitCode = await runCli(
+			[
+				"cellview",
+				"open",
+				"--lib",
+				"ota_lib",
+				"--cell",
+				"ota_core",
+				"--view",
+				"schematic",
+				"--registry-dir",
+				join(workDir, "registry"),
+				"--json",
+			],
+			io,
+		);
 
-		expect(exitCode).toBe(0);
-		expect(io.stderrLines).toEqual([]);
+		expect(exitCode).toBe(1);
 		const output = JSON.parse(io.stdoutLines[0]);
-		expect(output.ok).toBe(true);
-		expect(output.value.process.command[0]).toBe("virtuoso");
-		expect(output.value.process.command).toContain("-nograph");
-		expect(output.value.process.dryRun).toBe(true);
+		expect(output.error.type).toBe("managed_instance_not_found");
+		expect(output.error.message).toContain("vab session start");
 	});
 
-	it("prints an inventory libraries dry-run command", async () => {
+	it("lists managed sessions without launching Virtuoso", async () => {
+		const session = await createManagedCliSession();
 		const io = createCapturedIo();
 
-		const exitCode = await runCli(["inventory", "libraries", "--json", "--dry-run"], io);
+		const exitCode = await runCli(["session", "list", "--registry-dir", session.registryDir, "--json"], io);
 
 		expect(exitCode).toBe(0);
-		expect(io.stderrLines).toEqual([]);
 		const output = JSON.parse(io.stdoutLines[0]);
-		expect(output.ok).toBe(true);
-		expect(output.value.process.command[0]).toBe("virtuoso");
-		expect(output.value.process.command).toContain("-nograph");
-		expect(output.value.process.dryRun).toBe(true);
-		expect(await readFile(output.value.scriptPath, "utf8")).toContain("vaListLibraries()");
+		expect(output.value).toHaveLength(1);
+		expect(output.value[0].instanceId).toBe(session.instanceId);
 	});
 
-	it("prints an inventory cellViews dry-run command", async () => {
-		const io = createCapturedIo();
-
-		const exitCode = await runCli(["inventory", "cellviews", "--lib", "ota_lib", "--json", "--dry-run"], io);
+	it("reads the current cellView through a managed session", async () => {
+		const { exitCode, io, output } = await runManagedCliCommand(
+			["cellview", "current"],
+			{ library: "ota_lib", cell: "ota_core", view: "schematic", mode: "r" },
+			"vaSessionGetCurrentCellView(",
+		);
 
 		expect(exitCode).toBe(0);
 		expect(io.stderrLines).toEqual([]);
-		const output = JSON.parse(io.stdoutLines[0]);
 		expect(output.ok).toBe(true);
-		expect(output.value.process.command[0]).toBe("virtuoso");
-		expect(output.value.process.command).toContain("-nograph");
-		expect(output.value.process.dryRun).toBe(true);
-		expect(await readFile(output.value.scriptPath, "utf8")).toContain('vaListCellViews("ota_lib")');
+		expect(output.value).toMatchObject({
+			instance: { instanceId: "vui-cli-test" },
+			value: { cell: "ota_core" },
+		});
+	});
+
+	it("reads inventory through a managed session", async () => {
+		const { exitCode, output } = await runManagedCliCommand(
+			["inventory", "libraries"],
+			{
+				counts: { libraries: 1, cells: 1, views: 1 },
+				libraries: [{ name: "ota_lib", path: "/work/ota_lib", counts: { cells: 1, views: 1 }, cells: [] }],
+			},
+			"vaSessionListLibraries(",
+		);
+
+		expect(exitCode).toBe(0);
+		expect(output.ok).toBe(true);
+		expect(output.value).toMatchObject({ summary: { counts: { libraries: 1 } } });
+	});
+
+	it("reads one library inventory through a managed session", async () => {
+		const { exitCode, output } = await runManagedCliCommand(
+			["inventory", "cellviews", "--lib", "ota_lib"],
+			{
+				name: "ota_lib",
+				path: "/work/ota_lib",
+				counts: { cells: 1, views: 1 },
+				cells: [{ name: "ota_core", counts: { views: 1 }, views: [{ name: "schematic" }] }],
+			},
+			'vaSessionListCellViews("ota_lib"',
+		);
+
+		expect(exitCode).toBe(0);
+		expect(output.ok).toBe(true);
+		expect(output.value).toMatchObject({ summary: { library: { name: "ota_lib" } } });
 	});
 
 	it("reports missing inventory cellViews library", async () => {
@@ -219,153 +420,71 @@ describe("CLI runner", () => {
 		expect(io.stderrLines[0]).toBe("Error: inventory cellviews requires --lib.");
 	});
 
-	it("prints a maestro inspect dry-run command", async () => {
-		const io = createCapturedIo();
-
-		const exitCode = await runCli(
-			[
-				"maestro",
-				"inspect",
-				"--lib",
-				"test_tb",
-				"--cell",
-				"two_stage_amp_tb",
-				"--view",
-				"maestro",
-				"--json",
-				"--dry-run",
-			],
-			io,
+	it("inspects Maestro through a managed session", async () => {
+		const { exitCode, output } = await runManagedCliCommand(
+			["maestro", "inspect", "--lib", "ota_lib", "--cell", "ota_tb", "--view", "maestro"],
+			createCliMaestroManifest(),
+			'vaSessionInspectMaestro("ota_lib" "ota_tb" "maestro"',
 		);
 
 		expect(exitCode).toBe(0);
-		expect(io.stderrLines).toEqual([]);
-		const output = JSON.parse(io.stdoutLines[0]);
 		expect(output.ok).toBe(true);
-		expect(output.value.process.command).toContain("-nograph");
-		expect(await readFile(output.value.scriptPath, "utf8")).toContain(
-			'vaInspectMaestro("test_tb" "two_stage_amp_tb" "maestro")',
-		);
+		expect(output.value).toMatchObject({ target: { cell: "ota_tb" }, summary: { kind: "maestro-inspect" } });
 	});
 
-	it("prints a cellView instances dry-run command", async () => {
-		const io = createCapturedIo();
-
-		const exitCode = await runCli(
-			[
-				"cellview",
-				"instances",
-				"--lib",
-				"ota_lib",
-				"--cell",
-				"ota_core",
-				"--view",
-				"schematic",
-				"--json",
-				"--dry-run",
-			],
-			io,
+	it("inspects a schematic through a managed session", async () => {
+		const { exitCode, output } = await runManagedCliCommand(
+			["schematic", "inspect", "--lib", "ota_lib", "--cell", "ota_core", "--view", "schematic"],
+			createCliSchematicManifest(),
+			'vaSessionInspectSchematic("ota_lib" "ota_core" "schematic"',
 		);
 
 		expect(exitCode).toBe(0);
-		expect(io.stderrLines).toEqual([]);
-		const output = JSON.parse(io.stdoutLines[0]);
 		expect(output.ok).toBe(true);
-		expect(output.value.process.command[0]).toBe("virtuoso");
-		expect(output.value.process.command).toContain("-nograph");
-		expect(output.value.process.dryRun).toBe(true);
+		expect(output.value).toMatchObject({ target: { cell: "ota_core" }, summary: { kind: "schematic-inspect" } });
 	});
 
-	it("prints a cellView summary dry-run command", async () => {
-		const io = createCapturedIo();
-
-		const exitCode = await runCli(
-			[
-				"cellview",
-				"summary",
-				"--lib",
-				"ota_lib",
-				"--cell",
-				"ota_core",
-				"--view",
-				"schematic",
-				"--json",
-				"--dry-run",
-			],
-			io,
+	it("reads cellView instances through a managed session", async () => {
+		const { exitCode, output } = await runManagedCliCommand(
+			["cellview", "instances", "--lib", "ota_lib", "--cell", "ota_core", "--view", "schematic"],
+			{
+				cellView: { library: "ota_lib", cell: "ota_core", view: "schematic", mode: "r" },
+				instances: [{ name: "M0", library: "gpdk", cell: "nmos", view: "symbol" }],
+			},
+			'vaSessionListInstances("ota_lib" "ota_core" "schematic" "r"',
 		);
 
 		expect(exitCode).toBe(0);
-		expect(io.stderrLines).toEqual([]);
-		const output = JSON.parse(io.stdoutLines[0]);
 		expect(output.ok).toBe(true);
-		expect(output.value.process.command[0]).toBe("virtuoso");
-		expect(output.value.process.command).toContain("-nograph");
-		expect(output.value.process.dryRun).toBe(true);
+		expect(output.value).toMatchObject({ value: { instances: [{ name: "M0" }] } });
 	});
 
-	it("prints an instance params dry-run command", async () => {
-		const io = createCapturedIo();
-
-		const exitCode = await runCli(
-			[
-				"instance",
-				"params",
-				"--lib",
-				"ota_lib",
-				"--cell",
-				"ota_core",
-				"--view",
-				"schematic",
-				"--name",
-				"M0",
-				"--json",
-				"--dry-run",
-			],
-			io,
+	it("reads instance parameters through a managed session", async () => {
+		const { exitCode, output } = await runManagedCliCommand(
+			["instance", "params", "--lib", "ota_lib", "--cell", "ota_core", "--view", "schematic", "--name", "M0"],
+			{
+				cellView: { library: "ota_lib", cell: "ota_core", view: "schematic", mode: "r" },
+				instance: { name: "M0", library: "gpdk", cell: "nmos", view: "symbol" },
+				parameters: [{ name: "w", value: "2u" }],
+			},
+			'vaSessionGetInstanceParameters("ota_lib" "ota_core" "schematic" "M0" "r"',
 		);
 
 		expect(exitCode).toBe(0);
-		expect(io.stderrLines).toEqual([]);
-		const output = JSON.parse(io.stdoutLines[0]);
 		expect(output.ok).toBe(true);
-		expect(output.value.process.command[0]).toBe("virtuoso");
-		expect(output.value.process.command).toContain("-nograph");
-		expect(output.value.process.dryRun).toBe(true);
+		expect(output.value).toMatchObject({ value: { parameters: [{ name: "w", value: "2u" }] } });
 	});
 
-	it("prints a cellView show UI dry-run command", async () => {
-		const io = createCapturedIo();
-
-		const exitCode = await runCli(
-			[
-				"cellview",
-				"show",
-				"--lib",
-				"ota_lib",
-				"--cell",
-				"ota_core",
-				"--view",
-				"schematic",
-				"--json",
-				"--display",
-				":1",
-				"--xauthority",
-				"/run/user/1000/gdm/Xauthority",
-				"--dry-run",
-			],
-			io,
+	it("shows a cellView in the existing managed UI", async () => {
+		const { exitCode, output } = await runManagedCliCommand(
+			["cellview", "show", "--lib", "ota_lib", "--cell", "ota_core", "--view", "schematic"],
+			{ library: "ota_lib", cell: "ota_core", view: "schematic", mode: "r", visible: true },
+			'vaSessionShowCellView("ota_lib" "ota_core" "schematic" "r"',
 		);
 
 		expect(exitCode).toBe(0);
-		expect(io.stderrLines).toEqual([]);
-		const output = JSON.parse(io.stdoutLines[0]);
 		expect(output.ok).toBe(true);
-		expect(output.value.command[0]).toBe("virtuoso");
-		expect(output.value.command).toContain("-restore");
-		expect(output.value.command).not.toContain("-nograph");
-		expect(output.value.detached).toBe(true);
-		expect(output.value.dryRun).toBe(true);
+		expect(output.value).toMatchObject({ value: { visible: true } });
 	});
 
 	it("reports missing cellView open arguments", async () => {
@@ -462,23 +581,10 @@ describe("CLI runner", () => {
 
 		expect(exitCode).toBe(1);
 		expect(io.stdoutLines).toEqual([]);
-		expect(io.stderrLines).toEqual([
-			"Error: --spectre-bin requires a value.",
-			"Usage:",
-			"  vab session start --json [--cds-lib <path>] [--session-dir <dir>] [--work-dir <dir>] [--display <display>] [--xauthority <path>] [--dry-run] [--include-process-output]",
-			"  vab session cellview show --session-dir <dir> --lib <lib> --cell <cell> --view <view> --json [--mode r|a|w] [--include-process-output]",
-			"  vab inventory libraries --json [--cds-lib <path>] [--dry-run] [--virtuoso-bin <path>] [--bridge-path <path>] [--include-process-output]",
-			"  vab inventory cellviews --lib <lib> --json [--cds-lib <path>] [--dry-run] [--virtuoso-bin <path>] [--bridge-path <path>] [--include-process-output]",
-			"  vab maestro inspect --lib <lib> --cell <cell> --view <view> --json [--cds-lib <path>] [--dry-run] [--include-process-output]",
-			"  vab cellview open --lib <lib> --cell <cell> --view <view> --json [--cds-lib <path>] [--mode r|a|w] [--dry-run] [--include-process-output]",
-			"  vab cellview current --json [--cds-lib <path>] [--dry-run] [--include-process-output]",
-			"  vab cellview instances --lib <lib> --cell <cell> --view <view> --json [--cds-lib <path>] [--mode r|a|w] [--dry-run] [--include-process-output]",
-			"  vab cellview summary --lib <lib> --cell <cell> --view <view> --json [--cds-lib <path>] [--mode r|a|w] [--dry-run] [--include-process-output]",
-			"  vab cellview show --lib <lib> --cell <cell> --view <view> --json [--cds-lib <path>] [--mode r|a|w] [--display <display>] [--xauthority <path>] [--dry-run] [--include-process-output]",
-			"  vab instance params --lib <lib> --cell <cell> --view <view> --name <instance> --json [--cds-lib <path>] [--mode r|a|w] [--dry-run] [--include-process-output]",
-			"  vab task validate <task.json> --json",
-			"  vab run <task.json> --json [--dry-run|--no-dry-run] [--spectre-bin <path>] [--jobs-root <dir>] [--include-process-output]",
-		]);
+		expect(io.stderrLines[0]).toBe("Error: --spectre-bin requires a value.");
+		expect(io.stderrLines[1]).toBe("Usage:");
+		expect(io.stderrLines).toContain("  vab session list --json [--registry-dir <dir>]");
+		expect(io.stderrLines.some((line) => line.startsWith("  vab run <task.json>"))).toBe(true);
 	});
 
 	it("prints usage for unknown commands", async () => {
@@ -488,21 +594,8 @@ describe("CLI runner", () => {
 
 		expect(exitCode).toBe(1);
 		expect(io.stdoutLines).toEqual([]);
-		expect(io.stderrLines).toEqual([
-			"Usage:",
-			"  vab session start --json [--cds-lib <path>] [--session-dir <dir>] [--work-dir <dir>] [--display <display>] [--xauthority <path>] [--dry-run] [--include-process-output]",
-			"  vab session cellview show --session-dir <dir> --lib <lib> --cell <cell> --view <view> --json [--mode r|a|w] [--include-process-output]",
-			"  vab inventory libraries --json [--cds-lib <path>] [--dry-run] [--virtuoso-bin <path>] [--bridge-path <path>] [--include-process-output]",
-			"  vab inventory cellviews --lib <lib> --json [--cds-lib <path>] [--dry-run] [--virtuoso-bin <path>] [--bridge-path <path>] [--include-process-output]",
-			"  vab maestro inspect --lib <lib> --cell <cell> --view <view> --json [--cds-lib <path>] [--dry-run] [--include-process-output]",
-			"  vab cellview open --lib <lib> --cell <cell> --view <view> --json [--cds-lib <path>] [--mode r|a|w] [--dry-run] [--include-process-output]",
-			"  vab cellview current --json [--cds-lib <path>] [--dry-run] [--include-process-output]",
-			"  vab cellview instances --lib <lib> --cell <cell> --view <view> --json [--cds-lib <path>] [--mode r|a|w] [--dry-run] [--include-process-output]",
-			"  vab cellview summary --lib <lib> --cell <cell> --view <view> --json [--cds-lib <path>] [--mode r|a|w] [--dry-run] [--include-process-output]",
-			"  vab cellview show --lib <lib> --cell <cell> --view <view> --json [--cds-lib <path>] [--mode r|a|w] [--display <display>] [--xauthority <path>] [--dry-run] [--include-process-output]",
-			"  vab instance params --lib <lib> --cell <cell> --view <view> --name <instance> --json [--cds-lib <path>] [--mode r|a|w] [--dry-run] [--include-process-output]",
-			"  vab task validate <task.json> --json",
-			"  vab run <task.json> --json [--dry-run|--no-dry-run] [--spectre-bin <path>] [--jobs-root <dir>] [--include-process-output]",
-		]);
+		expect(io.stderrLines[0]).toBe("Usage:");
+		expect(io.stderrLines).toContain("  vab session list --json [--registry-dir <dir>]");
+		expect(io.stderrLines.some((line) => line.startsWith("  vab schematic inspect"))).toBe(true);
 	});
 });

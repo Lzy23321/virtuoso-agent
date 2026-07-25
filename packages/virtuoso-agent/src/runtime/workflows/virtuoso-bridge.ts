@@ -1,5 +1,4 @@
-import { mkdir, writeFile } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join } from "node:path";
 import {
 	enqueueVirtuosoBridgeSessionCommand,
 	getDefaultVirtuosoBridgePath,
@@ -13,8 +12,15 @@ import {
 	type VirtuosoUiLauncher,
 	type VirtuosoUiLaunchResult,
 } from "../backends/virtuoso/bridge.ts";
+import type { ArtifactRef, CellViewRef, InspectResult } from "../core/inspection.ts";
 import type { ProcessExecutor, ProcessRunResult } from "../core/process-runner.ts";
-import { fail, ok, type RuntimeResult } from "../core/result.ts";
+import { ok, type RuntimeResult } from "../core/result.ts";
+import {
+	finalizeMaestroInspection,
+	finalizeSchematicInspection,
+	finalizeVirtuosoLibrariesInventory,
+	finalizeVirtuosoLibraryCellViewsInventory,
+} from "./inspection-results.ts";
 
 export interface VirtuosoBridgeOptions {
 	bridgePath?: string;
@@ -39,10 +45,7 @@ export interface VirtuosoSessionOptions extends VirtuosoBridgeOptions {
 	readyTimeoutMs?: number;
 }
 
-export interface VirtuosoCellViewRef {
-	library: string;
-	cell: string;
-	view: string;
+export interface VirtuosoCellViewRef extends CellViewRef {
 	mode: string;
 }
 
@@ -67,18 +70,6 @@ export interface VirtuosoInstanceParameterList {
 	cellView: VirtuosoCellViewRef;
 	instance: VirtuosoInstanceSummary;
 	parameters: VirtuosoInstanceParameter[];
-}
-
-export interface VirtuosoInstanceSummaryWithParameters extends VirtuosoInstanceSummary {
-	parameters: VirtuosoInstanceParameter[];
-}
-
-export interface VirtuosoCellViewSummary {
-	cellView: VirtuosoCellViewRef;
-	counts: {
-		instances: number;
-	};
-	instances: VirtuosoInstanceSummaryWithParameters[];
 }
 
 export interface VirtuosoInventoryView {
@@ -125,16 +116,31 @@ export interface VirtuosoInventoryCellViewsSummary {
 	library: VirtuosoInventoryLibrarySummary;
 }
 
-export interface VirtuosoInventoryArtifact {
-	path: string;
+export interface VirtuosoInventoryArtifact extends ArtifactRef {
 	format: "json";
-	kind: "libraries" | "cellviews" | "maestro-inspect";
-	createdAt: string;
+	kind: "libraries" | "cellviews" | "maestro-inspect" | "schematic-inspect";
 }
 
 export interface VirtuosoInventoryArtifactResult<TSummary> {
 	summary?: TSummary;
 	artifact?: VirtuosoInventoryArtifact;
+	process: ProcessRunResult;
+	scriptPath: string;
+	bridgePath: string;
+	cdsLib?: string;
+}
+
+export interface VirtuosoInspectionResult<TSummary> extends InspectResult<TSummary> {
+	inspection: "completed";
+	process: ProcessRunResult;
+	scriptPath: string;
+	bridgePath: string;
+	cdsLib?: string;
+}
+
+export interface VirtuosoInspectionDryRunResult {
+	inspection: "dry-run";
+	target: CellViewRef;
 	process: ProcessRunResult;
 	scriptPath: string;
 	bridgePath: string;
@@ -162,11 +168,7 @@ export interface VirtuosoMaestroInspect {
 	schemaVersion: string;
 	kind: "maestro-inspect";
 	generatedAt: string;
-	target: {
-		library: string;
-		cell: string;
-		view: string;
-	};
+	target: CellViewRef;
 	source: {
 		cdsLib?: string;
 		openMode: "r";
@@ -246,9 +248,108 @@ export interface VirtuosoMaestroInspect {
 
 export interface VirtuosoMaestroInspectSummary {
 	kind: "maestro-inspect";
-	target: VirtuosoMaestroInspect["target"];
 	session: Pick<VirtuosoMaestroInspect["session"], "name" | "valid" | "singleTest" | "closedAfterInspect">;
 	counts: VirtuosoMaestroCounts;
+}
+
+export type VirtuosoSchematicJsonValue = string | number | boolean | null | VirtuosoSchematicJsonValue[];
+
+export interface VirtuosoSchematicCounts {
+	instances: number;
+	topTerminals: number;
+	instanceTerminals: number;
+	nets: number;
+	connectedEndpoints: number;
+	unconnectedEndpoints: number;
+	referencedMasters: number;
+}
+
+export interface VirtuosoSchematicMaster extends CellViewRef {}
+
+export interface VirtuosoSchematicInstance {
+	name: string;
+	master: VirtuosoSchematicMaster;
+	placement: {
+		x: number | null;
+		y: number | null;
+		orientation: string | null;
+	};
+	parameters: Record<string, VirtuosoSchematicJsonValue>;
+}
+
+export interface VirtuosoSchematicTerminal {
+	name: string;
+	direction: string | null;
+	width: number;
+}
+
+export interface VirtuosoSchematicNet {
+	name: string;
+	signalType: string | null;
+	isGlobal: boolean;
+	width: number;
+}
+
+export interface VirtuosoSchematicConnection {
+	net: string | null;
+	endpoint:
+		| {
+				kind: "instance-terminal";
+				instance: string;
+				terminal: string;
+				direction: string | null;
+				width: number;
+		  }
+		| {
+				kind: "top-terminal";
+				terminal: string;
+				direction: string | null;
+				width: number;
+		  };
+}
+
+export interface VirtuosoSchematicReference {
+	master: VirtuosoSchematicMaster;
+	instanceCount: number;
+	instances: string[];
+}
+
+export interface VirtuosoSchematicInspect {
+	schemaVersion: "0.1";
+	kind: "schematic-inspect";
+	generatedAt: string;
+	target: CellViewRef;
+	source: {
+		cdsLib?: string;
+		openMode: "r";
+		virtuosoVersion: string;
+	};
+	connectivity: {
+		status: string;
+	};
+	summary: VirtuosoSchematicCounts;
+	instances: VirtuosoSchematicInstance[];
+	terminals: VirtuosoSchematicTerminal[];
+	nets: VirtuosoSchematicNet[];
+	connections: VirtuosoSchematicConnection[];
+	references: VirtuosoSchematicReference[];
+	warnings: string[];
+}
+
+export interface VirtuosoSchematicInspectSummary {
+	kind: "schematic-inspect";
+	connectivityStatus: string;
+	counts: VirtuosoSchematicCounts;
+	devices: Array<{
+		master: VirtuosoSchematicMaster;
+		count: number;
+		instances: string[];
+	}>;
+	instances: Array<{
+		name: string;
+		master: VirtuosoSchematicMaster;
+		parameters: Record<string, VirtuosoSchematicJsonValue>;
+	}>;
 }
 
 export interface VirtuosoBridgeCallResult<TValue> {
@@ -266,6 +367,11 @@ export interface OpenVirtuosoCellViewRequest extends VirtuosoBridgeOptions {
 	mode?: "r" | "a" | "w";
 }
 
+/**
+ * @deprecated Use showManagedVirtuosoCellView for agent and CLI workflows.
+ * This compatibility API starts a one-shot bridge process and does not preserve
+ * the opened database handle after that process exits.
+ */
 export async function openVirtuosoCellView(
 	request: OpenVirtuosoCellViewRequest,
 ): Promise<RuntimeResult<VirtuosoBridgeCallResult<VirtuosoCellViewRef>>> {
@@ -305,17 +411,20 @@ export async function listVirtuosoLibraries(
 			cdsLib: result.value.cdsLib,
 		});
 	}
-	const summary = summarizeInventoryLibraries(result.value.value);
-	return writeInventoryArtifact({
-		options,
+	const finalized = await finalizeVirtuosoLibrariesInventory(result.value.value, {
+		cwd: result.value.process.cwd,
+		cdsLib: result.value.cdsLib,
+		workDir: options.workDir,
+	});
+	if (!finalized.ok) {
+		return finalized;
+	}
+	return ok({
+		...finalized.value,
 		process: result.value.process,
 		scriptPath: result.value.scriptPath,
 		bridgePath: result.value.bridgePath,
 		cdsLib: result.value.cdsLib,
-		kind: "libraries",
-		name: "libraries",
-		full: result.value.value,
-		summary,
 	});
 }
 
@@ -341,19 +450,20 @@ export async function listVirtuosoLibraryCellViews(
 			cdsLib: result.value.cdsLib,
 		});
 	}
-	const summary = {
-		library: summarizeInventoryLibrary(result.value.value),
-	};
-	return writeInventoryArtifact({
-		options: request,
+	const finalized = await finalizeVirtuosoLibraryCellViewsInventory(result.value.value, {
+		cwd: result.value.process.cwd,
+		cdsLib: result.value.cdsLib,
+		workDir: request.workDir,
+	});
+	if (!finalized.ok) {
+		return finalized;
+	}
+	return ok({
+		...finalized.value,
 		process: result.value.process,
 		scriptPath: result.value.scriptPath,
 		bridgePath: result.value.bridgePath,
 		cdsLib: result.value.cdsLib,
-		kind: "cellviews",
-		name: `cellviews-${request.library}`,
-		full: result.value.value,
-		summary,
 	});
 }
 
@@ -364,12 +474,58 @@ export interface InspectVirtuosoCellViewRequest extends VirtuosoBridgeOptions {
 	mode?: "r" | "a" | "w";
 }
 
+export async function inspectVirtuosoSchematic(
+	request: InspectVirtuosoCellViewRequest,
+): Promise<RuntimeResult<VirtuosoInspectionResult<VirtuosoSchematicInspectSummary> | VirtuosoInspectionDryRunResult>> {
+	const bridgePath = request.bridgePath ?? getDefaultVirtuosoBridgePath();
+	const schematicInspectPath = join(dirname(bridgePath), "schematic-inspect.il");
+	const result = await runVirtuosoBridgeExpression<unknown>({
+		...request,
+		expression: `load(${skillString(schematicInspectPath)})\nvaInspectSchematic(${skillString(
+			request.library,
+		)} ${skillString(request.cell)} ${skillString(request.view)})`,
+	});
+	if (!result.ok) {
+		return result;
+	}
+	if (result.value.process.dryRun) {
+		return ok({
+			inspection: "dry-run",
+			target: { library: request.library, cell: request.cell, view: request.view },
+			process: result.value.process,
+			scriptPath: result.value.scriptPath,
+			bridgePath: result.value.bridgePath,
+			cdsLib: result.value.cdsLib,
+		});
+	}
+	const finalized = await finalizeSchematicInspection({
+		raw: result.value.value,
+		target: { library: request.library, cell: request.cell, view: request.view },
+		artifactContext: {
+			cwd: result.value.process.cwd,
+			cdsLib: result.value.cdsLib,
+			workDir: request.workDir,
+		},
+	});
+	if (!finalized.ok) {
+		return finalized;
+	}
+	return ok({
+		inspection: "completed",
+		...finalized.value,
+		process: result.value.process,
+		scriptPath: result.value.scriptPath,
+		bridgePath: result.value.bridgePath,
+		cdsLib: result.value.cdsLib,
+	});
+}
+
 export async function inspectVirtuosoMaestro(
 	request: InspectVirtuosoCellViewRequest,
-): Promise<RuntimeResult<VirtuosoInventoryArtifactResult<VirtuosoMaestroInspectSummary>>> {
+): Promise<RuntimeResult<VirtuosoInspectionResult<VirtuosoMaestroInspectSummary> | VirtuosoInspectionDryRunResult>> {
 	const bridgePath = request.bridgePath ?? getDefaultVirtuosoBridgePath();
 	const maestroInspectPath = join(dirname(bridgePath), "maestro-inspect.il");
-	const result = await runVirtuosoBridgeExpression<VirtuosoMaestroInspect>({
+	const result = await runVirtuosoBridgeExpression<unknown>({
 		...request,
 		expression: `load(${skillString(maestroInspectPath)})\nvaInspectMaestro(${skillString(
 			request.library,
@@ -380,39 +536,39 @@ export async function inspectVirtuosoMaestro(
 	}
 	if (result.value.process.dryRun) {
 		return ok({
+			inspection: "dry-run",
+			target: { library: request.library, cell: request.cell, view: request.view },
 			process: result.value.process,
 			scriptPath: result.value.scriptPath,
 			bridgePath: result.value.bridgePath,
 			cdsLib: result.value.cdsLib,
 		});
 	}
-	const full: VirtuosoMaestroInspect = {
-		...result.value.value,
-		generatedAt: new Date().toISOString(),
-		source: {
-			...result.value.value.source,
-			...(result.value.cdsLib ? { cdsLib: result.value.cdsLib } : {}),
+	const finalized = await finalizeMaestroInspection({
+		raw: result.value.value,
+		target: { library: request.library, cell: request.cell, view: request.view },
+		artifactContext: {
+			cwd: result.value.process.cwd,
+			cdsLib: result.value.cdsLib,
+			workDir: request.workDir,
 		},
-		warnings: [
-			...result.value.value.warnings,
-			...(result.value.process.exitCode === 0
+		additionalWarnings:
+			result.value.process.exitCode === 0
 				? []
 				: [
 						`Virtuoso returned a complete manifest but did not exit cleanly (exitCode: ${result.value.process.exitCode}).`,
-					]),
-		],
-	};
-	return writeInventoryArtifact({
-		options: request,
+					],
+	});
+	if (!finalized.ok) {
+		return finalized;
+	}
+	return ok({
+		inspection: "completed",
+		...finalized.value,
 		process: result.value.process,
 		scriptPath: result.value.scriptPath,
 		bridgePath: result.value.bridgePath,
 		cdsLib: result.value.cdsLib,
-		kind: "maestro-inspect",
-		directory: "inspect",
-		name: `maestro-${request.library}-${request.cell}-${request.view}`,
-		full,
-		summary: summarizeMaestroInspect(full),
 	});
 }
 
@@ -452,25 +608,6 @@ export async function getVirtuosoInstanceParameters(
 		expression: `vaGetInstanceParameters(${skillString(request.library)} ${skillString(request.cell)} ${skillString(
 			request.view,
 		)} ${skillString(request.instanceName)} ${skillString(mode)})`,
-	});
-}
-
-export interface SummarizeVirtuosoCellViewRequest extends VirtuosoBridgeOptions {
-	library: string;
-	cell: string;
-	view: string;
-	mode?: "r" | "a" | "w";
-}
-
-export async function summarizeVirtuosoCellView(
-	request: SummarizeVirtuosoCellViewRequest,
-): Promise<RuntimeResult<VirtuosoBridgeCallResult<VirtuosoCellViewSummary>>> {
-	const mode = request.mode ?? "r";
-	return runVirtuosoBridgeExpression<VirtuosoCellViewSummary>({
-		...request,
-		expression: `vaCellViewSummary(${skillString(request.library)} ${skillString(request.cell)} ${skillString(
-			request.view,
-		)} ${skillString(mode)})`,
 	});
 }
 
@@ -525,89 +662,4 @@ export async function showVirtuosoCellView(
 	});
 }
 
-async function writeInventoryArtifact<TSummary>(request: {
-	options: VirtuosoBridgeOptions;
-	process: ProcessRunResult;
-	scriptPath: string;
-	bridgePath: string;
-	cdsLib?: string;
-	kind: VirtuosoInventoryArtifact["kind"];
-	directory?: "inventory" | "inspect";
-	name: string;
-	full: unknown;
-	summary: TSummary;
-}): Promise<RuntimeResult<VirtuosoInventoryArtifactResult<TSummary>>> {
-	const createdAt = new Date().toISOString();
-	const directory = getVirtuosoArtifactDir(request.options, request.process.cwd, request.directory ?? "inventory");
-	const artifactPath = join(directory, `${safeArtifactName(request.name)}-${formatArtifactTimestamp(createdAt)}.json`);
-	try {
-		await mkdir(directory, { recursive: true });
-		await writeFile(artifactPath, `${JSON.stringify(request.full, null, 2)}\n`, "utf8");
-		return ok({
-			summary: request.summary,
-			artifact: {
-				path: artifactPath,
-				format: "json",
-				kind: request.kind,
-				createdAt,
-			},
-			process: request.process,
-			scriptPath: request.scriptPath,
-			bridgePath: request.bridgePath,
-			cdsLib: request.cdsLib,
-		});
-	} catch (error) {
-		return fail({
-			type: "inventory_artifact_write_error",
-			stage: "inventory_artifact_write",
-			message: error instanceof Error ? error.message : String(error),
-			details: { artifactPath, kind: request.kind },
-		});
-	}
-}
-
-function summarizeInventoryLibrary(library: VirtuosoInventoryLibrarySummary): VirtuosoInventoryLibrarySummary {
-	return {
-		name: library.name,
-		path: library.path,
-		counts: library.counts,
-	};
-}
-
-function summarizeInventoryLibraries(inventory: VirtuosoInventoryLibrariesSummary): VirtuosoInventoryLibrariesSummary {
-	return {
-		counts: inventory.counts,
-		libraries: inventory.libraries.map(summarizeInventoryLibrary),
-	};
-}
-
-function summarizeMaestroInspect(inspect: VirtuosoMaestroInspect): VirtuosoMaestroInspectSummary {
-	return {
-		kind: inspect.kind,
-		target: inspect.target,
-		session: {
-			name: inspect.session.name,
-			valid: inspect.session.valid,
-			singleTest: inspect.session.singleTest,
-			closedAfterInspect: inspect.session.closedAfterInspect,
-		},
-		counts: inspect.summary,
-	};
-}
-
-function getVirtuosoArtifactDir(
-	options: VirtuosoBridgeOptions,
-	processCwd: string,
-	artifactKind: "inventory" | "inspect",
-): string {
-	const baseDir = options.workDir ?? (options.cdsLib ? dirname(resolve(options.cdsLib)) : processCwd);
-	return join(resolve(baseDir), ".virtuoso-agent", artifactKind);
-}
-
-function safeArtifactName(value: string): string {
-	return value.replace(/[^A-Za-z0-9_.-]+/g, "_").replace(/^_+|_+$/g, "") || "inventory";
-}
-
-function formatArtifactTimestamp(value: string): string {
-	return value.replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z");
-}
+export { normalizeSchematicInspect, summarizeSchematicInspect } from "./inspection-results.ts";

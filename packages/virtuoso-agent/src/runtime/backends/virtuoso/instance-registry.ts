@@ -43,10 +43,27 @@ export function getDefaultVirtuosoInstanceRegistryDir(): string {
 	return join(homedir(), ".virtuoso-agent", "instances");
 }
 
+export function validateManagedVirtuosoInstanceId(instanceId: string): RuntimeResult<string> {
+	if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(instanceId)) {
+		return fail({
+			type: "virtuoso_instance_id_invalid",
+			stage: "virtuoso_instance_validation",
+			message:
+				"Managed Virtuoso instanceId must be 1-128 characters and contain only letters, numbers, dots, underscores, or hyphens.",
+			details: { instanceId },
+		});
+	}
+	return ok(instanceId);
+}
+
 export async function registerManagedVirtuosoInstance(
 	record: ManagedVirtuosoInstanceRecord,
 	registryDir = getDefaultVirtuosoInstanceRegistryDir(),
 ): Promise<RuntimeResult<{ path: string }>> {
+	const validatedInstanceId = validateManagedVirtuosoInstanceId(record.instanceId);
+	if (!validatedInstanceId.ok) {
+		return validatedInstanceId;
+	}
 	const path = join(registryDir, `${record.instanceId}.json`);
 	const temporaryPath = `${path}.tmp`;
 	try {
@@ -119,11 +136,11 @@ export async function resolveManagedVirtuosoInstance(
 	}
 	if (listed.value.length === 0) {
 		return fail({
-			type: query.instanceId ? "virtuoso_instance_unavailable" : "virtuoso_instance_not_found",
+			type: query.instanceId ? "virtuoso_instance_unavailable" : "managed_instance_not_found",
 			stage: "virtuoso_instance_resolution",
 			message: query.instanceId
 				? `Managed Virtuoso instance ${query.instanceId} is not ready or no longer alive.`
-				: "No ready virtuoso-agent managed instance matches this request.",
+				: "No ready virtuoso-agent managed instance matches this request. Start one with `vab session start`.",
 			details: { instanceId: query.instanceId, cdsLib: query.cdsLib, requireUi: query.requireUi ?? false },
 		});
 	}

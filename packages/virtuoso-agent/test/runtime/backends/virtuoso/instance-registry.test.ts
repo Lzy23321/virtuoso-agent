@@ -7,6 +7,7 @@ import {
 	type ManagedVirtuosoInstanceRecord,
 	registerManagedVirtuosoInstance,
 	resolveManagedVirtuosoInstance,
+	validateManagedVirtuosoInstanceId,
 } from "../../../../src/index.ts";
 
 async function createReadyInstance(
@@ -49,6 +50,15 @@ async function createReadyInstance(
 }
 
 describe("managed Virtuoso instance registry", () => {
+	it("rejects instance IDs that can escape the registry directory", () => {
+		const result = validateManagedVirtuosoInstanceId("../../outside");
+
+		expect(result.ok).toBe(false);
+		if (!result.ok) {
+			expect(result.error.type).toBe("virtuoso_instance_id_invalid");
+		}
+	});
+
 	it("lists only registered instances with a live pid and fresh heartbeat", async () => {
 		const registryDir = await mkdtemp(join(tmpdir(), "virtuoso-instance-registry-"));
 		const cdsLib = join(registryDir, "project", "cds.lib");

@@ -6,6 +6,10 @@
 	"private": true,
 	"main": "./dist/index.js",
 	"types": "./dist/index.d.ts",
+	"bin": {
+		"vab": "./dist/cli/main.js"
+	},
+	"files": ["dist", "skill-runtime", "skills", "prompts", "README.md"],
 	"exports": {
 		".": {
 			"types": "./dist/index.d.ts",
@@ -23,7 +27,7 @@
 	},
 	"scripts": {
 		"clean": "shx rm -rf dist",
-		"build": "tsgo -p tsconfig.build.json",
+		"build": "tsgo -p tsconfig.build.json && shx chmod +x dist/cli/main.js",
 		"test": "vitest --run"
 	},
 	"dependencies": {

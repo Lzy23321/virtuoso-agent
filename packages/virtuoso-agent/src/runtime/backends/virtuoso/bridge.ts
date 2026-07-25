@@ -7,7 +7,11 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { type ProcessExecutor, type ProcessRunResult, runProcess } from "../../core/process-runner.ts";
 import { fail, ok, type RuntimeResult } from "../../core/result.ts";
-import { getDefaultVirtuosoInstanceRegistryDir, registerManagedVirtuosoInstance } from "./instance-registry.ts";
+import {
+	getDefaultVirtuosoInstanceRegistryDir,
+	registerManagedVirtuosoInstance,
+	validateManagedVirtuosoInstanceId,
+} from "./instance-registry.ts";
 
 export interface VirtuosoBridgeRunRequest {
 	expression: string;
@@ -161,6 +165,7 @@ export async function runVirtuosoBridgeExpression<TValue>(
 	}
 	const script = await createVirtuosoBridgeScript({
 		bridgePath,
+		cdsLib: launchContext.value.cdsLib,
 		expression: request.expression,
 		workDir: launchContext.value.workDir,
 		exitAfterExpression: true,
@@ -227,6 +232,7 @@ export async function startVirtuosoBridgeUi(
 	}
 	const script = await createVirtuosoBridgeScript({
 		bridgePath,
+		cdsLib: launchContext.value.cdsLib,
 		expression: request.expression,
 		workDir: launchContext.value.workDir,
 		exitAfterExpression: false,
@@ -284,6 +290,10 @@ export async function startVirtuosoBridgeSession(
 		return desktopEnvironment;
 	}
 	const instanceId = request.instanceId ?? `vui-${randomUUID()}`;
+	const validatedInstanceId = validateManagedVirtuosoInstanceId(instanceId);
+	if (!validatedInstanceId.ok) {
+		return validatedInstanceId;
+	}
 	const sessionDir = request.sessionDir ?? join(workDir, ".virtuoso-agent", "instances", instanceId);
 	const dirs = await prepareVirtuosoSessionDirs(sessionDir);
 	if (!dirs.ok) {
@@ -302,6 +312,7 @@ export async function startVirtuosoBridgeSession(
 	const heartbeatPath = join(sessionDir, "heartbeat.json");
 	const script = await createVirtuosoBridgeScript({
 		bridgePath,
+		cdsLib: launchContext.value.cdsLib,
 		expression: `vaStartSessionBridge(${skillString(sessionDir)} ${skillString(readyPath)} ${skillString(heartbeatPath)})`,
 		workDir,
 		exitAfterExpression: false,
@@ -418,12 +429,32 @@ export async function enqueueVirtuosoBridgeSessionCommand(
 	if (!dirs.ok) {
 		return dirs;
 	}
-	const id = request.resultFileName ?? `${randomUUID()}.json`;
-	const resultFileName = id.endsWith(".json") ? id : `${id}.json`;
-	const commandFileName = `${resultFileName.slice(0, -".json".length)}.il`;
+	const resultFileName = normalizeSessionResultFileName(request.resultFileName ?? `${randomUUID()}.json`);
+	if (!resultFileName.ok) {
+		return resultFileName;
+	}
+	const commandFileName = `${resultFileName.value.slice(0, -".json".length)}.il`;
 	const commandPath = join(dirs.value.commandDir, commandFileName);
 	const temporaryCommandPath = `${commandPath}.tmp`;
-	const resultPath = join(dirs.value.resultDir, resultFileName);
+	const resultPath = join(dirs.value.resultDir, resultFileName.value);
+	try {
+		await stat(resultPath);
+		return fail({
+			type: "virtuoso_session_result_conflict",
+			stage: "virtuoso_session_enqueue",
+			message: `Managed Virtuoso result already exists: ${resultFileName.value}`,
+			details: { sessionDir: request.sessionDir, resultPath },
+		});
+	} catch (error) {
+		if (!isNodeError(error, "ENOENT")) {
+			return fail({
+				type: "virtuoso_session_result_check_error",
+				stage: "virtuoso_session_enqueue",
+				message: error instanceof Error ? error.message : String(error),
+				details: { sessionDir: request.sessionDir, resultPath },
+			});
+		}
+	}
 	try {
 		await writeFile(
 			temporaryCommandPath,
@@ -450,12 +481,14 @@ export async function enqueueVirtuosoBridgeSessionCommand(
 export async function executeVirtuosoBridgeSessionCommand<TValue>(
 	request: VirtuosoBridgeSessionExecuteRequest,
 ): Promise<RuntimeResult<VirtuosoBridgeSessionExecutionResult<TValue>>> {
-	const resultFileName = request.resultFileName ?? `${randomUUID()}.json`;
-	const normalizedResultFileName = resultFileName.endsWith(".json") ? resultFileName : `${resultFileName}.json`;
-	const resultPath = join(request.sessionDir, "results", normalizedResultFileName);
+	const normalizedResultFileName = normalizeSessionResultFileName(request.resultFileName ?? `${randomUUID()}.json`);
+	if (!normalizedResultFileName.ok) {
+		return normalizedResultFileName;
+	}
+	const resultPath = join(request.sessionDir, "results", normalizedResultFileName.value);
 	const queued = await enqueueVirtuosoBridgeSessionCommand({
 		sessionDir: request.sessionDir,
-		resultFileName: normalizedResultFileName,
+		resultFileName: normalizedResultFileName.value,
 		expression: request.expression(resultPath),
 	});
 	if (!queued.ok) {
@@ -490,6 +523,20 @@ export async function executeVirtuosoBridgeSessionCommand<TValue>(
 		message: `Timed out after ${timeoutMs} ms waiting for the managed Virtuoso result.`,
 		details: { sessionDir: request.sessionDir, resultPath: queued.value.resultPath },
 	});
+}
+
+function normalizeSessionResultFileName(value: string): RuntimeResult<string> {
+	const fileName = value.endsWith(".json") ? value : `${value}.json`;
+	if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,191}\.json$/.test(fileName)) {
+		return fail({
+			type: "virtuoso_session_result_name_invalid",
+			stage: "virtuoso_session_validation",
+			message:
+				"Managed Virtuoso resultFileName must be a single safe JSON file name using only letters, numbers, dots, underscores, or hyphens.",
+			details: { resultFileName: value },
+		});
+	}
+	return ok(fileName);
 }
 
 async function resolveVirtuosoLaunchContext(
@@ -588,6 +635,7 @@ async function prepareVirtuosoSessionDirs(sessionDir: string): Promise<
 
 async function createVirtuosoBridgeScript(request: {
 	bridgePath: string;
+	cdsLib?: string;
 	expression: string;
 	workDir?: string;
 	exitAfterExpression: boolean;
@@ -599,6 +647,7 @@ async function createVirtuosoBridgeScript(request: {
 			scriptPath,
 			[
 				`; Generated by virtuoso-agent. Do not edit.`,
+				...(request.cdsLib ? [`ddSetForcedLib(${skillString(request.cdsLib)})`, "ddUpdateLibList()"] : []),
 				`load(${skillString(request.bridgePath)})`,
 				request.expression,
 				...(request.exitAfterExpression ? ["exit()"] : []),
@@ -863,4 +912,8 @@ function findLastJsonLine<TValue>(stdout: string): RuntimeResult<TValue> {
 		message: "Could not find a JSON bridge response in Virtuoso stdout.",
 		details: { stdout },
 	});
+}
+
+function isNodeError(error: unknown, code: string): boolean {
+	return error instanceof Error && "code" in error && error.code === code;
 }

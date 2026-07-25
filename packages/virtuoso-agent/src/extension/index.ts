@@ -8,6 +8,7 @@ import {
 	getManagedCurrentCellView,
 	getManagedVirtuosoInstances,
 	inspectManagedVirtuosoMaestro,
+	inspectManagedVirtuosoSchematic,
 	listManagedVirtuosoLibraries,
 	listManagedVirtuosoLibraryCellViews,
 	runTask,
@@ -142,17 +143,11 @@ export default function (pi: ExtensionAPI) {
 		label: "Inspect Virtuoso Inventory",
 		description:
 			"List library summaries or the cells and views in one library through a live managed instance. Use only when discovery is needed.",
-		parameters: Type.Union([
-			Type.Object({
-				action: Type.Literal("libraries"),
-				...managedInstanceParameters,
-			}),
-			Type.Object({
-				action: Type.Literal("cellviews"),
-				library: Type.String({ description: "Library name." }),
-				...managedInstanceParameters,
-			}),
-		]),
+		parameters: Type.Object({
+			action: Type.Union([Type.Literal("libraries"), Type.Literal("cellviews")]),
+			library: Type.Optional(Type.String({ description: "Required when action is cellviews." })),
+			...managedInstanceParameters,
+		}),
 		async execute(_toolCallId, params) {
 			if (params.action === "libraries") {
 				const result = await listManagedVirtuosoLibraries({
@@ -168,9 +163,14 @@ export default function (pi: ExtensionAPI) {
 				return { content: [{ type: "text", text }], details: compactAgentOutput(result) as unknown };
 			}
 
+			if (!params.library) {
+				return invalidToolInput("library is required when virtuoso_inventory action is cellviews");
+			}
 			const result = await listManagedVirtuosoLibraryCellViews({
-				...params,
+				library: params.library,
 				instanceId: params.instanceId ?? boundInstanceId,
+				cdsLib: params.cdsLib,
+				timeoutMs: params.timeoutMs,
 			});
 			if (result.ok) {
 				boundInstanceId = result.value.instance.instanceId;
@@ -187,20 +187,14 @@ export default function (pi: ExtensionAPI) {
 		label: "Operate on Virtuoso CellView",
 		description:
 			"Read the active cellView or show a specified cellView in a live managed Virtuoso UI. Never starts a new process.",
-		parameters: Type.Union([
-			Type.Object({
-				action: Type.Literal("current"),
-				...managedInstanceParameters,
-			}),
-			Type.Object({
-				action: Type.Literal("show"),
-				library: Type.String(),
-				cell: Type.String(),
-				view: Type.String(),
-				mode: Type.Optional(Type.Union([Type.Literal("r"), Type.Literal("a"), Type.Literal("w")])),
-				...managedInstanceParameters,
-			}),
-		]),
+		parameters: Type.Object({
+			action: Type.Union([Type.Literal("current"), Type.Literal("show")]),
+			library: Type.Optional(Type.String({ description: "Required when action is show." })),
+			cell: Type.Optional(Type.String({ description: "Required when action is show." })),
+			view: Type.Optional(Type.String({ description: "Required when action is show." })),
+			mode: Type.Optional(Type.Union([Type.Literal("r"), Type.Literal("a"), Type.Literal("w")])),
+			...managedInstanceParameters,
+		}),
 		async execute(_toolCallId, params) {
 			if (params.action === "current") {
 				const result = await getManagedCurrentCellView({
@@ -223,9 +217,17 @@ export default function (pi: ExtensionAPI) {
 				};
 			}
 
+			if (!params.library || !params.cell || !params.view) {
+				return invalidToolInput("library, cell, and view are required when virtuoso_cellview action is show");
+			}
 			const result = await showManagedVirtuosoCellView({
-				...params,
+				library: params.library,
+				cell: params.cell,
+				view: params.view,
+				mode: params.mode,
 				instanceId: params.instanceId ?? boundInstanceId,
+				cdsLib: params.cdsLib,
+				timeoutMs: params.timeoutMs,
 			});
 			if (result.ok) {
 				boundInstanceId = result.value.instance.instanceId;
@@ -244,28 +246,42 @@ export default function (pi: ExtensionAPI) {
 		},
 	});
 
-	const inspectMaestroTool = defineTool({
-		name: "virtuoso_inspect_maestro",
-		label: "Inspect Virtuoso Maestro",
-		description: "Inspect one Maestro setup through a live managed Virtuoso instance and save the manifest.",
+	const inspectTool = defineTool({
+		name: "virtuoso_inspect",
+		label: "Inspect Virtuoso Design Data",
+		description:
+			"Inspect one schematic or Maestro setup through a live managed Virtuoso instance and save the manifest.",
 		parameters: Type.Object({
+			action: Type.Union([Type.Literal("schematic"), Type.Literal("maestro")]),
 			library: Type.String(),
 			cell: Type.String(),
 			view: Type.String(),
 			...managedInstanceParameters,
 		}),
 		async execute(_toolCallId, params) {
-			const result = await inspectManagedVirtuosoMaestro({
+			const request = {
 				...params,
 				instanceId: params.instanceId ?? boundInstanceId,
-			});
+			};
+			if (params.action === "schematic") {
+				const result = await inspectManagedVirtuosoSchematic(request);
+				if (result.ok) {
+					boundInstanceId = result.value.instance.instanceId;
+				}
+				const text = result.ok
+					? `Schematic inspect saved: ${result.value.target.library}/${result.value.target.cell}/${result.value.target.view}, ${result.value.summary.counts.instances} instances, ${result.value.summary.counts.nets} nets, ${result.value.summary.counts.unconnectedEndpoints} unconnected endpoints. Manifest: ${result.value.artifacts[0].path}. Topology: ${result.value.artifacts[1].path}`
+					: result.error.message;
+				return { content: [{ type: "text", text }], details: compactAgentOutput(result) as unknown };
+			}
+
+			const result = await inspectManagedVirtuosoMaestro(request);
 			if (result.ok) {
 				boundInstanceId = result.value.instance.instanceId;
 			}
 			const text = result.ok
-				? `Maestro inspect saved: ${params.library}/${params.cell}/${params.view}, ${result.value.summary.counts.tests} tests, ${result.value.summary.counts.analysisEntries} analyses, ${result.value.summary.counts.outputs} outputs. Artifact: ${result.value.artifact.path}`
+				? `Maestro inspect saved: ${result.value.target.library}/${result.value.target.cell}/${result.value.target.view}, ${result.value.summary.counts.tests} tests, ${result.value.summary.counts.analysisEntries} analyses, ${result.value.summary.counts.outputs} outputs. Artifact: ${result.value.artifacts[0].path}`
 				: result.error.message;
-			return { content: [{ type: "text", text }], details: compactAgentOutput(result) };
+			return { content: [{ type: "text", text }], details: compactAgentOutput(result) as unknown };
 		},
 	});
 
@@ -273,10 +289,10 @@ export default function (pi: ExtensionAPI) {
 		name: "virtuoso_task",
 		label: "Validate or Run Virtuoso Task",
 		description: "Validate a Virtuoso task file or run its workflow and return metrics, proposal, and artifacts.",
-		parameters: Type.Union([
-			Type.Object({ action: Type.Literal("validate"), path: Type.String() }),
-			Type.Object({ action: Type.Literal("run"), path: Type.String() }),
-		]),
+		parameters: Type.Object({
+			action: Type.Union([Type.Literal("validate"), Type.Literal("run")]),
+			path: Type.String(),
+		}),
 		async execute(_toolCallId, params) {
 			if (params.action === "validate") {
 				const result = await validateTaskFile(params.path);
@@ -299,6 +315,13 @@ export default function (pi: ExtensionAPI) {
 	pi.registerTool(launchInstanceTool);
 	pi.registerTool(inventoryTool);
 	pi.registerTool(cellViewTool);
-	pi.registerTool(inspectMaestroTool);
+	pi.registerTool(inspectTool);
 	pi.registerTool(taskTool);
+}
+
+function invalidToolInput(message: string) {
+	return {
+		content: [{ type: "text" as const, text: `Invalid tool input: ${message}.` }],
+		details: { ok: false, type: "virtuoso_tool_input_error", message },
+	};
 }
