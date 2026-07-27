@@ -5,10 +5,10 @@ import { Type } from "@earendil-works/pi-ai";
 import { defineTool, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
 	compactAgentOutput,
+	exportManagedMaestroBundle,
+	exportManagedSchematicBundle,
 	getManagedCurrentCellView,
 	getManagedVirtuosoInstances,
-	inspectManagedVirtuosoMaestro,
-	inspectManagedVirtuosoSchematic,
 	listManagedVirtuosoLibraries,
 	listManagedVirtuosoLibraryCellViews,
 	runTask,
@@ -246,16 +246,17 @@ export default function (pi: ExtensionAPI) {
 		},
 	});
 
-	const inspectTool = defineTool({
-		name: "virtuoso_inspect",
-		label: "Inspect Virtuoso Design Data",
+	const exportTool = defineTool({
+		name: "virtuoso_export",
+		label: "Export Virtuoso Simulation Bundle",
 		description:
-			"Inspect one schematic or Maestro setup through a live managed Virtuoso instance and save the manifest.",
+			"Export Cadence-native Spectre and OCEAN artifacts from one schematic or Maestro setup through a live managed Virtuoso instance. Does not run simulation.",
 		parameters: Type.Object({
 			action: Type.Union([Type.Literal("schematic"), Type.Literal("maestro")]),
 			library: Type.String(),
 			cell: Type.String(),
 			view: Type.String(),
+			outputDirectory: Type.Optional(Type.String({ description: "Optional parent directory for the new bundle." })),
 			...managedInstanceParameters,
 		}),
 		async execute(_toolCallId, params) {
@@ -264,22 +265,22 @@ export default function (pi: ExtensionAPI) {
 				instanceId: params.instanceId ?? boundInstanceId,
 			};
 			if (params.action === "schematic") {
-				const result = await inspectManagedVirtuosoSchematic(request);
+				const result = await exportManagedSchematicBundle(request);
 				if (result.ok) {
 					boundInstanceId = result.value.instance.instanceId;
 				}
 				const text = result.ok
-					? `Schematic inspect saved: ${result.value.target.library}/${result.value.target.cell}/${result.value.target.view}, ${result.value.summary.counts.instances} instances, ${result.value.summary.counts.nets} nets, ${result.value.summary.counts.unconnectedEndpoints} unconnected endpoints. Manifest: ${result.value.artifacts[0].path}. Topology: ${result.value.artifacts[1].path}`
+					? `Schematic simulation bundle exported without running simulation: ${result.value.bundleDirectory}. Manifest: ${result.value.manifest.path}`
 					: result.error.message;
 				return { content: [{ type: "text", text }], details: compactAgentOutput(result) as unknown };
 			}
 
-			const result = await inspectManagedVirtuosoMaestro(request);
+			const result = await exportManagedMaestroBundle(request);
 			if (result.ok) {
 				boundInstanceId = result.value.instance.instanceId;
 			}
 			const text = result.ok
-				? `Maestro inspect saved: ${result.value.target.library}/${result.value.target.cell}/${result.value.target.view}, ${result.value.summary.counts.tests} tests, ${result.value.summary.counts.analysisEntries} analyses, ${result.value.summary.counts.outputs} outputs. Artifact: ${result.value.artifacts[0].path}`
+				? `Maestro simulation bundle exported without running simulation: ${result.value.bundleDirectory}. Manifest: ${result.value.manifest.path}`
 				: result.error.message;
 			return { content: [{ type: "text", text }], details: compactAgentOutput(result) as unknown };
 		},
@@ -315,7 +316,7 @@ export default function (pi: ExtensionAPI) {
 	pi.registerTool(launchInstanceTool);
 	pi.registerTool(inventoryTool);
 	pi.registerTool(cellViewTool);
-	pi.registerTool(inspectTool);
+	pi.registerTool(exportTool);
 	pi.registerTool(taskTool);
 }
 

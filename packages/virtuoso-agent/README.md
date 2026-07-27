@@ -12,6 +12,19 @@ Agent and CLI workflows reuse a registered Virtuoso session:
 vab session start --cds-lib /path/to/cds.lib --json
 vab session list --json
 vab cellview show --lib worklib --cell ota --view schematic --json
+vab schematic export --lib worklib --cell ota_tb --view schematic --json
+vab maestro export --lib worklib --cell ota_tb --view maestro --json
 ```
 
 `vab cellview open` is a compatibility alias for `vab cellview show`. Both require an existing managed UI session and never start or close Virtuoso implicitly. If no matching session exists, start one explicitly with `vab session start`.
+
+## Cadence-native simulation bundles
+
+Schematic and Maestro reads are exported from the existing managed Virtuoso process. The package does not reconstruct topology or Maestro setup data as a custom manifest.
+
+- Schematic export saves the complete Cadence Spectre netlist directory, with `input.scs` as the primary artifact.
+- Maestro export saves one top-level Assembler OCEAN XL script, plus a single-point OCEAN script and complete Spectre netlist directory for every discovered test.
+- Export never calls `run()` and does not launch a separate `ocean` or `virtuoso` process.
+- `bundle.json` only records target identity, test discovery, artifact paths, hashes, provenance, and file-level validation.
+
+Bundles are written under `<project>/.virtuoso-agent/bundles/` by default. Large Cadence files stay on disk; tool results return their paths.

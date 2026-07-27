@@ -12,10 +12,3 @@ export interface ArtifactRef {
 	path: string;
 	createdAt: string;
 }
-
-export interface InspectResult<TSummary> {
-	target: CellViewRef;
-	summary: TSummary;
-	artifacts: [ArtifactRef, ...ArtifactRef[]];
-	warnings: string[];
-}

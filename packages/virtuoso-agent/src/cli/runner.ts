@@ -9,12 +9,10 @@
 
 import {
 	compactAgentOutput,
+	exportManagedMaestroBundle,
+	exportManagedSchematicBundle,
 	getManagedCurrentCellView,
-	getManagedVirtuosoInstanceParameters,
 	getManagedVirtuosoInstances,
-	inspectManagedVirtuosoMaestro,
-	inspectManagedVirtuosoSchematic,
-	listManagedVirtuosoCellViewInstances,
 	listManagedVirtuosoLibraries,
 	listManagedVirtuosoLibraryCellViews,
 	type ManagedVirtuosoRequest,
@@ -147,50 +145,26 @@ export async function runCli(argv: string[], io: CliIo = consoleIo): Promise<num
 		return 1;
 	}
 
-	const maestroInspectCommand = parseMaestroInspectCommand(argv);
-	if (maestroInspectCommand.ok) {
-		const result = await inspectManagedVirtuosoMaestro(maestroInspectCommand.request);
+	const maestroExportCommand = parseMaestroExportCommand(argv);
+	if (maestroExportCommand.ok) {
+		const result = await exportManagedMaestroBundle(maestroExportCommand.request);
 		writeJson(io, result, includeProcessOutput);
 		return result.ok ? 0 : 1;
 	}
-	if (maestroInspectCommand.error) {
-		io.stderr(`Error: ${maestroInspectCommand.error}`);
+	if (maestroExportCommand.error) {
+		io.stderr(`Error: ${maestroExportCommand.error}`);
 		writeUsage(io);
 		return 1;
 	}
 
-	const schematicInspectCommand = parseSchematicInspectCommand(argv);
-	if (schematicInspectCommand.ok) {
-		const result = await inspectManagedVirtuosoSchematic(schematicInspectCommand.request);
+	const schematicExportCommand = parseSchematicExportCommand(argv);
+	if (schematicExportCommand.ok) {
+		const result = await exportManagedSchematicBundle(schematicExportCommand.request);
 		writeJson(io, result, includeProcessOutput);
 		return result.ok ? 0 : 1;
 	}
-	if (schematicInspectCommand.error) {
-		io.stderr(`Error: ${schematicInspectCommand.error}`);
-		writeUsage(io);
-		return 1;
-	}
-
-	const listInstancesCommand = parseListInstancesCommand(argv);
-	if (listInstancesCommand.ok) {
-		const result = await listManagedVirtuosoCellViewInstances(listInstancesCommand.request);
-		writeJson(io, result, includeProcessOutput);
-		return result.ok ? 0 : 1;
-	}
-	if (listInstancesCommand.error) {
-		io.stderr(`Error: ${listInstancesCommand.error}`);
-		writeUsage(io);
-		return 1;
-	}
-
-	const instanceParametersCommand = parseInstanceParametersCommand(argv);
-	if (instanceParametersCommand.ok) {
-		const result = await getManagedVirtuosoInstanceParameters(instanceParametersCommand.request);
-		writeJson(io, result, includeProcessOutput);
-		return result.ok ? 0 : 1;
-	}
-	if (instanceParametersCommand.error) {
-		io.stderr(`Error: ${instanceParametersCommand.error}`);
+	if (schematicExportCommand.error) {
+		io.stderr(`Error: ${schematicExportCommand.error}`);
 		writeUsage(io);
 		return 1;
 	}
@@ -318,24 +292,13 @@ interface ParsedInspectCellViewCommand {
 	};
 }
 
-interface ParsedListInstancesCommand {
+interface ParsedBundleExportCommand {
 	ok: true;
 	request: ManagedVirtuosoRequest & {
 		library: string;
 		cell: string;
 		view: string;
-		mode?: "r" | "a" | "w";
-	};
-}
-
-interface ParsedInstanceParametersCommand {
-	ok: true;
-	request: ManagedVirtuosoRequest & {
-		library: string;
-		cell: string;
-		view: string;
-		instanceName: string;
-		mode?: "r" | "a" | "w";
+		outputDirectory?: string;
 	};
 }
 
@@ -474,48 +437,32 @@ function parseInventoryCellViewsCommand(argv: string[]): ParsedInventoryCellView
 	};
 }
 
-function parseMaestroInspectCommand(argv: string[]): ParsedInspectCellViewCommand | IgnoredCommand {
+function parseMaestroExportCommand(argv: string[]): ParsedBundleExportCommand | IgnoredCommand {
 	const [command, action] = argv;
-	if (command !== "maestro" || action !== "inspect") {
+	if (command !== "maestro" || action !== "export") {
 		return { ok: false };
 	}
-	return parseManagedCellViewRefCommand(argv, "maestro inspect");
+	return parseBundleExportCommand(argv, "maestro export");
 }
 
-function parseSchematicInspectCommand(argv: string[]): ParsedInspectCellViewCommand | IgnoredCommand {
+function parseSchematicExportCommand(argv: string[]): ParsedBundleExportCommand | IgnoredCommand {
 	const [command, action] = argv;
-	if (command !== "schematic" || action !== "inspect") {
+	if (command !== "schematic" || action !== "export") {
 		return { ok: false };
 	}
-	return parseManagedCellViewRefCommand(argv, "schematic inspect");
+	return parseBundleExportCommand(argv, "schematic export");
 }
 
-function parseListInstancesCommand(argv: string[]): ParsedListInstancesCommand | IgnoredCommand {
-	const [command, action] = argv;
-	if (command !== "cellview" || action !== "instances") {
-		return { ok: false };
-	}
-	return parseManagedCellViewRefCommand(argv, "cellview instances");
-}
-
-function parseInstanceParametersCommand(argv: string[]): ParsedInstanceParametersCommand | IgnoredCommand {
-	const [command, action] = argv;
-	if (command !== "instance" || action !== "params") {
-		return { ok: false };
-	}
-	const parsed = parseManagedCellViewRefCommand(argv, "instance params");
+function parseBundleExportCommand(argv: string[], label: string): ParsedBundleExportCommand | IgnoredCommand {
+	const parsed = parseManagedCellViewRefCommand(argv, label);
 	if (!parsed.ok) {
 		return parsed;
-	}
-	const instanceName = getOptionValue(argv, "--name");
-	if (!instanceName) {
-		return { ok: false, error: "instance params requires --name." };
 	}
 	return {
 		ok: true,
 		request: {
 			...parsed.request,
-			instanceName,
+			outputDirectory: getOptionValue(argv, "--output-dir"),
 		},
 	};
 }
@@ -589,7 +536,7 @@ function parseManagedVirtuosoOptions(args: string[]): { ok: true; value: Managed
 
 	for (let index = 0; index < args.length; index++) {
 		const arg = args[index];
-		if (arg === "--lib" || arg === "--cell" || arg === "--view" || arg === "--mode" || arg === "--name") {
+		if (arg === "--lib" || arg === "--cell" || arg === "--view" || arg === "--mode" || arg === "--output-dir") {
 			index++;
 			continue;
 		}
@@ -821,10 +768,10 @@ function writeUsage(io: CliIo, toStdout = false): void {
 		"  vab inventory cellviews --lib <lib> --json [--instance-id <id>] [--cds-lib <path>] [--registry-dir <dir>] [--timeout-ms <ms>]",
 	);
 	write(
-		"  vab maestro inspect --lib <lib> --cell <cell> --view <view> --json [--instance-id <id>] [--cds-lib <path>] [--registry-dir <dir>] [--timeout-ms <ms>]",
+		"  vab maestro export --lib <lib> --cell <cell> --view <view> --json [--output-dir <dir>] [--instance-id <id>] [--cds-lib <path>] [--registry-dir <dir>] [--timeout-ms <ms>]",
 	);
 	write(
-		"  vab schematic inspect --lib <lib> --cell <cell> --view <view> --json [--instance-id <id>] [--cds-lib <path>] [--registry-dir <dir>] [--timeout-ms <ms>]",
+		"  vab schematic export --lib <lib> --cell <cell> --view <view> --json [--output-dir <dir>] [--instance-id <id>] [--cds-lib <path>] [--registry-dir <dir>] [--timeout-ms <ms>]",
 	);
 	write(
 		"  vab cellview open --lib <lib> --cell <cell> --view <view> --json [--instance-id <id>] [--cds-lib <path>] [--registry-dir <dir>] [--mode r|a|w] [--timeout-ms <ms>]",
@@ -833,13 +780,7 @@ function writeUsage(io: CliIo, toStdout = false): void {
 		"  vab cellview current --json [--instance-id <id>] [--cds-lib <path>] [--registry-dir <dir>] [--timeout-ms <ms>]",
 	);
 	write(
-		"  vab cellview instances --lib <lib> --cell <cell> --view <view> --json [--instance-id <id>] [--cds-lib <path>] [--registry-dir <dir>] [--mode r|a|w] [--timeout-ms <ms>]",
-	);
-	write(
 		"  vab cellview show --lib <lib> --cell <cell> --view <view> --json [--instance-id <id>] [--cds-lib <path>] [--registry-dir <dir>] [--mode r|a|w] [--timeout-ms <ms>]",
-	);
-	write(
-		"  vab instance params --lib <lib> --cell <cell> --view <view> --name <instance> --json [--instance-id <id>] [--cds-lib <path>] [--registry-dir <dir>] [--mode r|a|w] [--timeout-ms <ms>]",
 	);
 	write("  vab task validate <task.json> --json");
 	write(

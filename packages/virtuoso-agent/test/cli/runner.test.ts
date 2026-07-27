@@ -150,50 +150,6 @@ async function runManagedCliCommand(
 	return { exitCode, io, output };
 }
 
-function createCliSchematicManifest(): Record<string, unknown> {
-	return {
-		schemaVersion: "0.1",
-		kind: "schematic-inspect",
-		generatedAt: "Cadence time",
-		target: { library: "ota_lib", cell: "ota_core", view: "schematic" },
-		source: { openMode: "r", virtuosoVersion: "IC25.1" },
-		connectivity: { status: "clean" },
-		summary: {},
-		instances: [],
-		terminals: [],
-		nets: [],
-		connections: [],
-		references: [],
-		warnings: [],
-	};
-}
-
-function createCliMaestroManifest(): Record<string, unknown> {
-	return {
-		schemaVersion: "0.1-prototype",
-		kind: "maestro-inspect",
-		generatedAt: "Cadence time",
-		target: { library: "ota_lib", cell: "ota_tb", view: "maestro" },
-		source: { openMode: "r", virtuosoVersion: "IC25.1" },
-		session: { name: "session1", valid: true, singleTest: true, modified: false, closedAfterInspect: true },
-		storage: { path: null },
-		summary: {
-			tests: 0,
-			enabledTests: 0,
-			globalVariables: 0,
-			testVariableEntries: 0,
-			uniqueTestVariables: 0,
-			parameters: { total: 0, enabled: 0, disabled: 0, withValue: 0 },
-			corners: 0,
-			analysisEntries: 0,
-			outputs: 0,
-		},
-		maestro: { globalVariables: [], parameters: [] },
-		tests: [],
-		warnings: [],
-	};
-}
-
 describe("CLI runner", () => {
 	it("prints help successfully", async () => {
 		const io = createCapturedIo();
@@ -420,59 +376,14 @@ describe("CLI runner", () => {
 		expect(io.stderrLines[0]).toBe("Error: inventory cellviews requires --lib.");
 	});
 
-	it("inspects Maestro through a managed session", async () => {
-		const { exitCode, output } = await runManagedCliCommand(
-			["maestro", "inspect", "--lib", "ota_lib", "--cell", "ota_tb", "--view", "maestro"],
-			createCliMaestroManifest(),
-			'vaSessionInspectMaestro("ota_lib" "ota_tb" "maestro"',
-		);
+	it("reports missing bundle export target arguments", async () => {
+		const io = createCapturedIo();
 
-		expect(exitCode).toBe(0);
-		expect(output.ok).toBe(true);
-		expect(output.value).toMatchObject({ target: { cell: "ota_tb" }, summary: { kind: "maestro-inspect" } });
-	});
+		const exitCode = await runCli(["maestro", "export", "--lib", "ota_lib", "--json"], io);
 
-	it("inspects a schematic through a managed session", async () => {
-		const { exitCode, output } = await runManagedCliCommand(
-			["schematic", "inspect", "--lib", "ota_lib", "--cell", "ota_core", "--view", "schematic"],
-			createCliSchematicManifest(),
-			'vaSessionInspectSchematic("ota_lib" "ota_core" "schematic"',
-		);
-
-		expect(exitCode).toBe(0);
-		expect(output.ok).toBe(true);
-		expect(output.value).toMatchObject({ target: { cell: "ota_core" }, summary: { kind: "schematic-inspect" } });
-	});
-
-	it("reads cellView instances through a managed session", async () => {
-		const { exitCode, output } = await runManagedCliCommand(
-			["cellview", "instances", "--lib", "ota_lib", "--cell", "ota_core", "--view", "schematic"],
-			{
-				cellView: { library: "ota_lib", cell: "ota_core", view: "schematic", mode: "r" },
-				instances: [{ name: "M0", library: "gpdk", cell: "nmos", view: "symbol" }],
-			},
-			'vaSessionListInstances("ota_lib" "ota_core" "schematic" "r"',
-		);
-
-		expect(exitCode).toBe(0);
-		expect(output.ok).toBe(true);
-		expect(output.value).toMatchObject({ value: { instances: [{ name: "M0" }] } });
-	});
-
-	it("reads instance parameters through a managed session", async () => {
-		const { exitCode, output } = await runManagedCliCommand(
-			["instance", "params", "--lib", "ota_lib", "--cell", "ota_core", "--view", "schematic", "--name", "M0"],
-			{
-				cellView: { library: "ota_lib", cell: "ota_core", view: "schematic", mode: "r" },
-				instance: { name: "M0", library: "gpdk", cell: "nmos", view: "symbol" },
-				parameters: [{ name: "w", value: "2u" }],
-			},
-			'vaSessionGetInstanceParameters("ota_lib" "ota_core" "schematic" "M0" "r"',
-		);
-
-		expect(exitCode).toBe(0);
-		expect(output.ok).toBe(true);
-		expect(output.value).toMatchObject({ value: { parameters: [{ name: "w", value: "2u" }] } });
+		expect(exitCode).toBe(1);
+		expect(io.stdoutLines).toEqual([]);
+		expect(io.stderrLines[0]).toBe("Error: maestro export requires --cell.");
 	});
 
 	it("shows a cellView in the existing managed UI", async () => {
@@ -495,19 +406,6 @@ describe("CLI runner", () => {
 		expect(exitCode).toBe(1);
 		expect(io.stdoutLines).toEqual([]);
 		expect(io.stderrLines[0]).toBe("Error: cellview open requires --cell.");
-	});
-
-	it("reports missing instance params arguments", async () => {
-		const io = createCapturedIo();
-
-		const exitCode = await runCli(
-			["instance", "params", "--lib", "ota_lib", "--cell", "ota_core", "--view", "schematic", "--json"],
-			io,
-		);
-
-		expect(exitCode).toBe(1);
-		expect(io.stdoutLines).toEqual([]);
-		expect(io.stderrLines[0]).toBe("Error: instance params requires --name.");
 	});
 
 	it("runs a fake task workflow", async () => {
@@ -596,6 +494,6 @@ describe("CLI runner", () => {
 		expect(io.stdoutLines).toEqual([]);
 		expect(io.stderrLines[0]).toBe("Usage:");
 		expect(io.stderrLines).toContain("  vab session list --json [--registry-dir <dir>]");
-		expect(io.stderrLines.some((line) => line.startsWith("  vab schematic inspect"))).toBe(true);
+		expect(io.stderrLines.some((line) => line.startsWith("  vab schematic export"))).toBe(true);
 	});
 });

@@ -44,7 +44,6 @@ export type {
 	ArtifactFormat,
 	ArtifactRef,
 	CellViewRef,
-	InspectResult,
 } from "./runtime/core/inspection.ts";
 export type { CreateJobRequest, JobArtifacts, JobRecord } from "./runtime/core/job.ts";
 export { createJob, writeJobJsonArtifact, writeJobTextArtifact } from "./runtime/core/job.ts";
@@ -68,57 +67,44 @@ export type {
 export { validateTaskFile, validateTaskObject } from "./runtime/core/task-schema.ts";
 export type {
 	FinalizedInventoryResult,
-	FinalizeInspectionRequest,
 	VirtuosoArtifactContext,
-} from "./runtime/workflows/inspection-results.ts";
+} from "./runtime/workflows/inventory-results.ts";
 export {
-	finalizeMaestroInspection,
-	finalizeSchematicInspection,
 	finalizeVirtuosoLibrariesInventory,
 	finalizeVirtuosoLibraryCellViewsInventory,
-} from "./runtime/workflows/inspection-results.ts";
+} from "./runtime/workflows/inventory-results.ts";
 export type {
 	ManagedCellViewRequest,
 	ManagedShowCellViewRequest,
 	ManagedVirtuosoArtifactResult,
-	ManagedVirtuosoInspectResult,
 	ManagedVirtuosoOperationResult,
 	ManagedVirtuosoRequest,
 } from "./runtime/workflows/managed-virtuoso.ts";
 export {
 	getManagedCurrentCellView,
-	getManagedVirtuosoInstanceParameters,
 	getManagedVirtuosoInstances,
-	inspectManagedVirtuosoMaestro,
-	inspectManagedVirtuosoSchematic,
-	listManagedVirtuosoCellViewInstances,
 	listManagedVirtuosoLibraries,
 	listManagedVirtuosoLibraryCellViews,
 	showManagedVirtuosoCellView,
 } from "./runtime/workflows/managed-virtuoso.ts";
-export {
-	validateVirtuosoMaestroInspect,
-	validateVirtuosoSchematicInspect,
-} from "./runtime/workflows/manifest-validation.ts";
 export type { RunTaskOptions, RunTaskResult } from "./runtime/workflows/run-task.ts";
 export { runTask } from "./runtime/workflows/run-task.ts";
-export { renderSchematicTopology } from "./runtime/workflows/schematic-topology.ts";
 export type {
-	GetVirtuosoInstanceParametersRequest,
-	InspectVirtuosoCellViewRequest,
-	ListVirtuosoInstancesRequest,
+	ExportSimulationBundleRequest,
+	SimulationBundleKind,
+	SimulationBundleResult,
+} from "./runtime/workflows/simulation-bundle.ts";
+export {
+	exportManagedMaestroBundle,
+	exportManagedSchematicBundle,
+} from "./runtime/workflows/simulation-bundle.ts";
+export type {
 	OpenVirtuosoCellViewRequest,
 	ShowVirtuosoCellViewInSessionRequest,
 	ShowVirtuosoCellViewRequest,
 	VirtuosoBridgeCallResult,
 	VirtuosoBridgeOptions,
 	VirtuosoCellViewRef,
-	VirtuosoInspectionDryRunResult,
-	VirtuosoInspectionResult,
-	VirtuosoInstanceList,
-	VirtuosoInstanceParameter,
-	VirtuosoInstanceParameterList,
-	VirtuosoInstanceSummary,
 	VirtuosoInventoryArtifact,
 	VirtuosoInventoryArtifactResult,
 	VirtuosoInventoryCell,
@@ -127,27 +113,10 @@ export type {
 	VirtuosoInventoryLibrary,
 	VirtuosoInventoryLibrarySummary,
 	VirtuosoInventoryView,
-	VirtuosoMaestroCounts,
-	VirtuosoMaestroInspect,
-	VirtuosoMaestroInspectSummary,
-	VirtuosoSchematicConnection,
-	VirtuosoSchematicCounts,
-	VirtuosoSchematicInspect,
-	VirtuosoSchematicInspectSummary,
-	VirtuosoSchematicInstance,
-	VirtuosoSchematicJsonValue,
-	VirtuosoSchematicMaster,
-	VirtuosoSchematicNet,
-	VirtuosoSchematicReference,
-	VirtuosoSchematicTerminal,
 	VirtuosoSessionOptions,
 } from "./runtime/workflows/virtuoso-bridge.ts";
 export {
 	getCurrentVirtuosoCellView,
-	getVirtuosoInstanceParameters,
-	inspectVirtuosoMaestro,
-	inspectVirtuosoSchematic,
-	listVirtuosoInstances,
 	listVirtuosoLibraries,
 	listVirtuosoLibraryCellViews,
 	openVirtuosoCellView,

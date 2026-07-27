@@ -1,28 +1,17 @@
-import { dirname, join } from "node:path";
 import { executeVirtuosoBridgeSessionCommand, skillString } from "../backends/virtuoso/bridge.ts";
 import {
 	type LiveManagedVirtuosoInstance,
 	listManagedVirtuosoInstances,
 	resolveManagedVirtuosoInstance,
 } from "../backends/virtuoso/instance-registry.ts";
-import type { InspectResult } from "../core/inspection.ts";
 import { ok, type RuntimeResult } from "../core/result.ts";
-import {
-	finalizeMaestroInspection,
-	finalizeSchematicInspection,
-	finalizeVirtuosoLibrariesInventory,
-	finalizeVirtuosoLibraryCellViewsInventory,
-} from "./inspection-results.ts";
+import { finalizeVirtuosoLibrariesInventory, finalizeVirtuosoLibraryCellViewsInventory } from "./inventory-results.ts";
 import type {
 	VirtuosoCellViewRef,
-	VirtuosoInstanceList,
-	VirtuosoInstanceParameterList,
 	VirtuosoInventoryArtifact,
 	VirtuosoInventoryCellViewsSummary,
 	VirtuosoInventoryLibrariesSummary,
 	VirtuosoInventoryLibrary,
-	VirtuosoMaestroInspectSummary,
-	VirtuosoSchematicInspectSummary,
 } from "./virtuoso-bridge.ts";
 
 export interface ManagedVirtuosoRequest {
@@ -44,13 +33,6 @@ export interface ManagedVirtuosoArtifactResult<TSummary> {
 	instance: LiveManagedVirtuosoInstance;
 	summary: TSummary;
 	artifact: VirtuosoInventoryArtifact;
-	commandPath: string;
-	resultPath: string;
-	completedAt: string;
-}
-
-export interface ManagedVirtuosoInspectResult<TSummary> extends InspectResult<TSummary> {
-	instance: LiveManagedVirtuosoInstance;
 	commandPath: string;
 	resultPath: string;
 	completedAt: string;
@@ -83,36 +65,6 @@ export async function getManagedCurrentCellView(
 		request,
 		true,
 		(resultPath) => `vaSessionGetCurrentCellView(${skillString(resultPath)})`,
-	);
-}
-
-export async function listManagedVirtuosoCellViewInstances(
-	request: ManagedCellViewRequest,
-): Promise<RuntimeResult<ManagedVirtuosoOperationResult<VirtuosoInstanceList>>> {
-	const mode = request.mode ?? "r";
-	return executeManagedOperation(
-		request,
-		false,
-		(resultPath) =>
-			`vaSessionListInstances(${skillString(request.library)} ${skillString(request.cell)} ${skillString(
-				request.view,
-			)} ${skillString(mode)} ${skillString(resultPath)})`,
-	);
-}
-
-export async function getManagedVirtuosoInstanceParameters(
-	request: ManagedCellViewRequest & { instanceName: string },
-): Promise<RuntimeResult<ManagedVirtuosoOperationResult<VirtuosoInstanceParameterList>>> {
-	const mode = request.mode ?? "r";
-	return executeManagedOperation(
-		request,
-		false,
-		(resultPath) =>
-			`vaSessionGetInstanceParameters(${skillString(request.library)} ${skillString(
-				request.cell,
-			)} ${skillString(request.view)} ${skillString(request.instanceName)} ${skillString(mode)} ${skillString(
-				resultPath,
-			)})`,
 	);
 }
 
@@ -157,70 +109,6 @@ export async function listManagedVirtuosoLibraryCellViews(
 	const finalized = await finalizeVirtuosoLibraryCellViewsInventory(result.value.value, {
 		cwd: result.value.instance.cwd,
 		cdsLib: result.value.instance.cdsLib,
-	});
-	if (!finalized.ok) {
-		return finalized;
-	}
-	return ok({
-		instance: result.value.instance,
-		...finalized.value,
-		commandPath: result.value.commandPath,
-		resultPath: result.value.resultPath,
-		completedAt: result.value.completedAt,
-	});
-}
-
-export async function inspectManagedVirtuosoMaestro(
-	request: ManagedVirtuosoRequest & { library: string; cell: string; view: string },
-): Promise<RuntimeResult<ManagedVirtuosoInspectResult<VirtuosoMaestroInspectSummary>>> {
-	const result = await executeManagedOperation<unknown>(request, false, (resultPath, instance) => {
-		const inspectPath = join(dirname(instance.bridgePath), "maestro-inspect.il");
-		return `load(${skillString(inspectPath)})\nvaSessionInspectMaestro(${skillString(request.library)} ${skillString(
-			request.cell,
-		)} ${skillString(request.view)} ${skillString(resultPath)})`;
-	});
-	if (!result.ok) {
-		return result;
-	}
-	const finalized = await finalizeMaestroInspection({
-		raw: result.value.value,
-		target: { library: request.library, cell: request.cell, view: request.view },
-		artifactContext: {
-			cwd: result.value.instance.cwd,
-			cdsLib: result.value.instance.cdsLib,
-		},
-	});
-	if (!finalized.ok) {
-		return finalized;
-	}
-	return ok({
-		instance: result.value.instance,
-		...finalized.value,
-		commandPath: result.value.commandPath,
-		resultPath: result.value.resultPath,
-		completedAt: result.value.completedAt,
-	});
-}
-
-export async function inspectManagedVirtuosoSchematic(
-	request: ManagedVirtuosoRequest & { library: string; cell: string; view: string },
-): Promise<RuntimeResult<ManagedVirtuosoInspectResult<VirtuosoSchematicInspectSummary>>> {
-	const result = await executeManagedOperation<unknown>(request, false, (resultPath, instance) => {
-		const inspectPath = join(dirname(instance.bridgePath), "schematic-inspect.il");
-		return `load(${skillString(inspectPath)})\nvaSessionInspectSchematic(${skillString(request.library)} ${skillString(
-			request.cell,
-		)} ${skillString(request.view)} ${skillString(resultPath)})`;
-	});
-	if (!result.ok) {
-		return result;
-	}
-	const finalized = await finalizeSchematicInspection({
-		raw: result.value.value,
-		target: { library: request.library, cell: request.cell, view: request.view },
-		artifactContext: {
-			cwd: result.value.instance.cwd,
-			cdsLib: result.value.instance.cdsLib,
-		},
 	});
 	if (!finalized.ok) {
 		return finalized;

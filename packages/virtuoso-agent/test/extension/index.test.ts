@@ -3,10 +3,10 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import virtuosoExtension from "../../src/extension/index.ts";
 
 const runtimeMocks = vi.hoisted(() => ({
+	exportManagedMaestroBundle: vi.fn(),
+	exportManagedSchematicBundle: vi.fn(),
 	getManagedCurrentCellView: vi.fn(),
 	getManagedVirtuosoInstances: vi.fn(),
-	inspectManagedVirtuosoMaestro: vi.fn(),
-	inspectManagedVirtuosoSchematic: vi.fn(),
 	listManagedVirtuosoLibraries: vi.fn(),
 	listManagedVirtuosoLibraryCellViews: vi.fn(),
 	runTask: vi.fn(),
@@ -48,7 +48,7 @@ describe("virtuoso-agent pi extension", () => {
 			"virtuoso_instance_launch",
 			"virtuoso_inventory",
 			"virtuoso_cellview",
-			"virtuoso_inspect",
+			"virtuoso_export",
 			"virtuoso_task",
 		]);
 		expect(tools.every((tool) => (tool.parameters as { type?: string }).type === "object")).toBe(true);
@@ -76,25 +76,25 @@ describe("virtuoso-agent pi extension", () => {
 			type?: string;
 		};
 		const taskParameters = tools.find((tool) => tool.name === "virtuoso_task")?.parameters as { type?: string };
-		const inspectParameters = tools.find((tool) => tool.name === "virtuoso_inspect")?.parameters as {
+		const exportParameters = tools.find((tool) => tool.name === "virtuoso_export")?.parameters as {
 			type?: string;
 		};
 		expect(inventoryParameters.type).toBe("object");
 		expect(cellViewParameters.type).toBe("object");
 		expect(taskParameters.type).toBe("object");
-		expect(inspectParameters.type).toBe("object");
+		expect(exportParameters.type).toBe("object");
 		const inventorySchema = JSON.stringify(inventoryParameters);
 		const cellViewSchema = JSON.stringify(cellViewParameters);
 		const taskSchema = JSON.stringify(taskParameters);
-		const inspectSchema = JSON.stringify(inspectParameters);
+		const exportSchema = JSON.stringify(exportParameters);
 		expect(inventorySchema).toContain('"const":"libraries"');
 		expect(inventorySchema).toContain('"const":"cellviews"');
 		expect(cellViewSchema).toContain('"const":"current"');
 		expect(cellViewSchema).toContain('"const":"show"');
 		expect(taskSchema).toContain('"const":"validate"');
 		expect(taskSchema).toContain('"const":"run"');
-		expect(inspectSchema).toContain('"const":"schematic"');
-		expect(inspectSchema).toContain('"const":"maestro"');
+		expect(exportSchema).toContain('"const":"schematic"');
+		expect(exportSchema).toContain('"const":"maestro"');
 	});
 
 	it("automatically binds the instance used by a successful business operation", async () => {
@@ -131,7 +131,7 @@ describe("virtuoso-agent pi extension", () => {
 		);
 	});
 
-	it("renders a Maestro inspection from the shared inspection result", async () => {
+	it("renders a Maestro bundle export result", async () => {
 		const tools: CapturedTool[] = [];
 		const pi = {
 			registerTool(tool: unknown) {
@@ -139,19 +139,17 @@ describe("virtuoso-agent pi extension", () => {
 			},
 		} as unknown as ExtensionAPI;
 		virtuosoExtension(pi);
-		runtimeMocks.inspectManagedVirtuosoMaestro.mockResolvedValue({
+		runtimeMocks.exportManagedMaestroBundle.mockResolvedValue({
 			ok: true,
 			value: {
 				instance: { instanceId: "vui-maestro" },
-				target: { library: "ota_lib", cell: "ota_tb", view: "maestro" },
-				summary: { counts: { tests: 2, analysisEntries: 3, outputs: 4 } },
-				artifacts: [{ path: "/tmp/maestro.json" }],
-				warnings: [],
+				bundleDirectory: "/tmp/maestro-bundle",
+				manifest: { path: "/tmp/maestro-bundle/bundle.json" },
 			},
 		});
 
 		const output = (await tools
-			.find((tool) => tool.name === "virtuoso_inspect")
+			.find((tool) => tool.name === "virtuoso_export")
 			?.execute("maestro-call", {
 				action: "maestro",
 				library: "ota_lib",
@@ -160,11 +158,11 @@ describe("virtuoso-agent pi extension", () => {
 			})) as { content: Array<{ text: string }> };
 
 		expect(output.content[0].text).toBe(
-			"Maestro inspect saved: ota_lib/ota_tb/maestro, 2 tests, 3 analyses, 4 outputs. Artifact: /tmp/maestro.json",
+			"Maestro simulation bundle exported without running simulation: /tmp/maestro-bundle. Manifest: /tmp/maestro-bundle/bundle.json",
 		);
 	});
 
-	it("renders a schematic inspection from the shared inspection result", async () => {
+	it("renders a schematic bundle export result", async () => {
 		const tools: CapturedTool[] = [];
 		const pi = {
 			registerTool(tool: unknown) {
@@ -172,19 +170,17 @@ describe("virtuoso-agent pi extension", () => {
 			},
 		} as unknown as ExtensionAPI;
 		virtuosoExtension(pi);
-		runtimeMocks.inspectManagedVirtuosoSchematic.mockResolvedValue({
+		runtimeMocks.exportManagedSchematicBundle.mockResolvedValue({
 			ok: true,
 			value: {
 				instance: { instanceId: "vui-schematic" },
-				target: { library: "ota_lib", cell: "ota_core", view: "schematic" },
-				summary: { counts: { instances: 8, nets: 6, unconnectedEndpoints: 1 } },
-				artifacts: [{ path: "/tmp/schematic.json" }, { path: "/tmp/schematic-topology.net" }],
-				warnings: [],
+				bundleDirectory: "/tmp/schematic-bundle",
+				manifest: { path: "/tmp/schematic-bundle/bundle.json" },
 			},
 		});
 
 		const output = (await tools
-			.find((tool) => tool.name === "virtuoso_inspect")
+			.find((tool) => tool.name === "virtuoso_export")
 			?.execute("schematic-call", {
 				action: "schematic",
 				library: "ota_lib",
@@ -193,7 +189,7 @@ describe("virtuoso-agent pi extension", () => {
 			})) as { content: Array<{ text: string }> };
 
 		expect(output.content[0].text).toBe(
-			"Schematic inspect saved: ota_lib/ota_core/schematic, 8 instances, 6 nets, 1 unconnected endpoints. Manifest: /tmp/schematic.json. Topology: /tmp/schematic-topology.net",
+			"Schematic simulation bundle exported without running simulation: /tmp/schematic-bundle. Manifest: /tmp/schematic-bundle/bundle.json",
 		);
 	});
 });
