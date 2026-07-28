@@ -16,6 +16,16 @@ interface FakeManagedInstance {
 	resultDir: string;
 }
 
+interface PreparedFakeMaestroTest {
+	index: number;
+	name: string;
+	enabled: boolean;
+	singleOceanPath: string;
+	sweepOceanPath: string;
+	netlistPath: string;
+	design: { library: string; cell: string; view: string };
+}
+
 describe("simulation bundle export", () => {
 	it("copies a schematic Spectre netlist returned by the managed Virtuoso bridge", async () => {
 		const instance = await createFakeManagedInstance("schematic-bundle");
@@ -61,7 +71,9 @@ describe("simulation bundle export", () => {
 			commandIndex += 1;
 			expect(commandIndex).toBe(1);
 			expect(command).not.toContain("vaSessionCreateNetlistFromOcean");
-			const bundleMatch = command.match(/vaSessionPrepareMaestroExport\("ota_lib" "ota_tb" "maestro" "([^"]+)"/);
+			const bundleMatch = command.match(
+				/vaSessionPrepareMaestroExportV4\("ota_lib" "ota_tb" "maestro" "([^"]+)" "all" ""/,
+			);
 			expect(bundleMatch).not.toBeNull();
 			const bundleDirectory = bundleMatch?.[1] ?? "";
 			const topOceanPath = join(bundleDirectory, "maestro", "maestro.ocn");
@@ -78,12 +90,15 @@ describe("simulation bundle export", () => {
 					'ocnxlTargetCellView( "ota_lib" "ota_tb" "maestro" ?mode "r" )',
 					'ocnxlBeginTest("ac_test")',
 					'ocnxlBeginTest("stb_test")',
+					"ocnxlRun( ?mode 'sweepsAndCorners ?nominalCornerEnabled t)",
 					"",
 				].join("\n"),
 				"utf8",
 			);
 			await writeSingleOcean(join(firstDirectory, "single.ocn"), "ota_lib", "ota_ac_tb");
 			await writeSingleOcean(join(secondDirectory, "single.ocn"), "alternate_tb", "ota_stb_tb");
+			await writeSweepOcean(join(firstDirectory, "sweep.ocn"), "ota_lib", "ota_tb", "ac_test", ["stb_test"]);
+			await writeSweepOcean(join(secondDirectory, "sweep.ocn"), "ota_lib", "ota_tb", "stb_test", ["ac_test"]);
 			await writeSpectreNetlist(firstSourcePath, "ota_lib", "ota_ac_tb", "schematic", "ac ac start=1 stop=1G");
 			await writeSpectreNetlist(
 				secondSourcePath,
@@ -93,6 +108,7 @@ describe("simulation bundle export", () => {
 				"stb stb start=1 stop=1G",
 			);
 			return {
+				scope: "all",
 				topOceanPath,
 				virtuosoVersion: "IC25.1",
 				tests: [
@@ -101,6 +117,7 @@ describe("simulation bundle export", () => {
 						name: "ac_test",
 						enabled: true,
 						singleOceanPath: join(firstDirectory, "single.ocn"),
+						sweepOceanPath: join(firstDirectory, "sweep.ocn"),
 						netlistPath: firstSourcePath,
 						design: { library: "ota_lib", cell: "ota_ac_tb", view: "schematic" },
 					},
@@ -109,6 +126,7 @@ describe("simulation bundle export", () => {
 						name: "stb_test",
 						enabled: false,
 						singleOceanPath: join(secondDirectory, "single.ocn"),
+						sweepOceanPath: join(secondDirectory, "sweep.ocn"),
 						netlistPath: secondSourcePath,
 						design: { library: "alternate_tb", cell: "ota_stb_tb", view: "schematic" },
 					},
@@ -131,21 +149,31 @@ describe("simulation bundle export", () => {
 		if (result.ok) {
 			const manifest = JSON.parse(await readFile(result.value.manifest.path, "utf8"));
 			expect(manifest).toMatchObject({
-				schemaVersion: 1,
+				schemaVersion: 2,
 				kind: "maestro-simulation-bundle",
+				scope: "all",
 				generator: { maestroApplication: "Assembler", openMode: "read-only", simulationExecuted: false },
+				topLevelOcean: {
+					kind: "ocean-maestro",
+					format: "ocean-xl",
+					path: "maestro/maestro.ocn",
+				},
 				tests: [
 					{
 						name: "ac_test",
 						enabled: true,
 						status: "complete",
 						design: { library: "ota_lib", cell: "ota_ac_tb", view: "schematic" },
+						singleOcean: { path: "tests/001/single.ocn" },
+						sweepOcean: { path: "tests/001/sweep.ocn" },
 					},
 					{
 						name: "stb_test",
 						enabled: false,
 						status: "complete",
 						design: { library: "alternate_tb", cell: "ota_stb_tb", view: "schematic" },
+						singleOcean: { path: "tests/002/single.ocn" },
+						sweepOcean: { path: "tests/002/sweep.ocn" },
 					},
 				],
 			});
@@ -155,10 +183,192 @@ describe("simulation bundle export", () => {
 			expect(
 				await readFile(join(result.value.bundleDirectory, "tests", "002", "netlist", "input.scs"), "utf8"),
 			).toContain("stb stb start=1 stop=1G");
+			expect(
+				JSON.parse(await readFile(join(result.value.bundleDirectory, "tests", "001", "test.json"), "utf8")),
+			).toMatchObject({
+				oceanScripts: {
+					singlePoint: "single.ocn",
+					sweep: "sweep.ocn",
+				},
+			});
+			expect(result.value.artifacts.map((artifact) => artifact.kind)).toEqual([
+				"ocean-maestro",
+				"ocean-single",
+				"ocean-sweep",
+				"spectre-netlist",
+				"ocean-single",
+				"ocean-sweep",
+				"spectre-netlist",
+			]);
 			expect(commandIndex).toBe(1);
 		}
 	});
+
+	it("exports only the top-level Maestro OCEAN script with top scope", async () => {
+		const instance = await createFakeManagedInstance("maestro-top");
+		const bridge = respondToCommands(instance, (command) => prepareSelectiveMaestroExport(instance, command));
+
+		const result = await exportManagedMaestroBundle({
+			instanceId: "maestro-top",
+			registryDir: instance.registryDir,
+			library: "ota_lib",
+			cell: "ota_tb",
+			view: "maestro",
+			scope: "top",
+			outputDirectory: join(instance.workDir, "bundles"),
+			timeoutMs: 2_000,
+		});
+		await bridge;
+
+		expect(result.ok).toBe(true);
+		if (result.ok) {
+			const manifest = JSON.parse(await readFile(result.value.manifest.path, "utf8"));
+			expect(manifest).toMatchObject({
+				scope: "top",
+				topLevelOcean: { path: "maestro/maestro.ocn" },
+				tests: [],
+			});
+			expect(result.value.artifacts.map((artifact) => artifact.kind)).toEqual(["ocean-maestro"]);
+			expect(await readdir(result.value.bundleDirectory)).toEqual(["bundle.json", "maestro"]);
+		}
+	});
+
+	it("exports every per-test artifact without the top-level script with tests scope", async () => {
+		const instance = await createFakeManagedInstance("maestro-tests");
+		const bridge = respondToCommands(instance, (command) => prepareSelectiveMaestroExport(instance, command));
+
+		const result = await exportManagedMaestroBundle({
+			instanceId: "maestro-tests",
+			registryDir: instance.registryDir,
+			library: "ota_lib",
+			cell: "ota_tb",
+			view: "maestro",
+			scope: "tests",
+			outputDirectory: join(instance.workDir, "bundles"),
+			timeoutMs: 2_000,
+		});
+		await bridge;
+
+		expect(result.ok).toBe(true);
+		if (result.ok) {
+			const manifest = JSON.parse(await readFile(result.value.manifest.path, "utf8"));
+			expect(manifest.scope).toBe("tests");
+			expect(manifest.topLevelOcean).toBeUndefined();
+			expect(manifest.tests.map((test: { index: number }) => test.index)).toEqual([1, 2]);
+			expect(result.value.artifacts).toHaveLength(6);
+		}
+	});
+
+	it("exports only one named test while preserving its Maestro index with test scope", async () => {
+		const instance = await createFakeManagedInstance("maestro-test");
+		const bridge = respondToCommands(instance, (command) => prepareSelectiveMaestroExport(instance, command));
+
+		const result = await exportManagedMaestroBundle({
+			instanceId: "maestro-test",
+			registryDir: instance.registryDir,
+			library: "ota_lib",
+			cell: "ota_tb",
+			view: "maestro",
+			scope: "test",
+			testName: "stb_test",
+			outputDirectory: join(instance.workDir, "bundles"),
+			timeoutMs: 2_000,
+		});
+		await bridge;
+
+		expect(result.ok).toBe(true);
+		if (result.ok) {
+			const manifest = JSON.parse(await readFile(result.value.manifest.path, "utf8"));
+			expect(manifest).toMatchObject({
+				scope: "test",
+				requestedTestName: "stb_test",
+				tests: [{ index: 2, name: "stb_test", singleOcean: { path: "tests/002/single.ocn" } }],
+			});
+			expect(manifest.topLevelOcean).toBeUndefined();
+			expect(result.value.artifacts.map((artifact) => artifact.kind)).toEqual([
+				"ocean-single",
+				"ocean-sweep",
+				"spectre-netlist",
+			]);
+		}
+	});
+
+	it("requires testName for test scope before contacting Virtuoso", async () => {
+		const result = await exportManagedMaestroBundle({
+			library: "ota_lib",
+			cell: "ota_tb",
+			view: "maestro",
+			scope: "test",
+		});
+
+		expect(result).toMatchObject({
+			ok: false,
+			error: { type: "maestro_test_name_required" },
+		});
+	});
 });
+
+async function prepareSelectiveMaestroExport(instance: FakeManagedInstance, command: string): Promise<unknown> {
+	const match = command.match(
+		/vaSessionPrepareMaestroExportV4\("ota_lib" "ota_tb" "maestro" "([^"]+)" "(all|top|tests|test)" "([^"]*)"/,
+	);
+	expect(match).not.toBeNull();
+	const bundleDirectory = match?.[1] ?? "";
+	const scope = match?.[2] ?? "all";
+	const requestedTestName = match?.[3] ?? "";
+	const includeTop = scope === "all" || scope === "top";
+	const testSpecs = [
+		{ index: 1, name: "ac_test", library: "ota_lib", cell: "ota_ac_tb", analysis: "ac ac start=1 stop=1G" },
+		{
+			index: 2,
+			name: "stb_test",
+			library: "alternate_tb",
+			cell: "ota_stb_tb",
+			analysis: "stb stb start=1 stop=1G",
+		},
+	];
+	const selectedTests =
+		scope === "top" ? [] : scope === "test" ? testSpecs.filter((test) => test.name === requestedTestName) : testSpecs;
+	const topOceanPath = includeTop ? join(bundleDirectory, "maestro", "maestro.ocn") : null;
+	if (topOceanPath) {
+		await writeFile(
+			topOceanPath,
+			[
+				'ocnSetXLMode("assembler")',
+				'ocnxlTargetCellView( "ota_lib" "ota_tb" "maestro" ?mode "r" )',
+				...testSpecs.map((test) => `ocnxlBeginTest("${test.name}")`),
+				"ocnxlRun( ?mode 'sweepsAndCorners ?nominalCornerEnabled t)",
+				"",
+			].join("\n"),
+			"utf8",
+		);
+	}
+	const tests: PreparedFakeMaestroTest[] = [];
+	for (const test of selectedTests) {
+		const testDirectory = join(bundleDirectory, "tests", test.index.toString().padStart(3, "0"));
+		const sourcePath = join(instance.workDir, `selective-netlist-${scope}-${test.index}`, "input.scs");
+		await mkdir(testDirectory, { recursive: true });
+		await writeSingleOcean(join(testDirectory, "single.ocn"), test.library, test.cell);
+		await writeSweepOcean(
+			join(testDirectory, "sweep.ocn"),
+			"ota_lib",
+			"ota_tb",
+			test.name,
+			testSpecs.filter((candidate) => candidate.name !== test.name).map((candidate) => candidate.name),
+		);
+		await writeSpectreNetlist(sourcePath, test.library, test.cell, "schematic", test.analysis);
+		tests.push({
+			index: test.index,
+			name: test.name,
+			enabled: true,
+			singleOceanPath: join(testDirectory, "single.ocn"),
+			sweepOceanPath: join(testDirectory, "sweep.ocn"),
+			netlistPath: sourcePath,
+			design: { library: test.library, cell: test.cell, view: "schematic" },
+		});
+	}
+	return { scope, topOceanPath, virtuosoVersion: "IC25.1", tests };
+}
 
 async function createFakeManagedInstance(instanceId: string): Promise<FakeManagedInstance> {
 	const workDir = await mkdtemp(join(tmpdir(), "virtuoso-agent-bundle-test-"));
@@ -254,6 +464,27 @@ async function writeSingleOcean(path: string, library: string, cell: string): Pr
 	await writeFile(
 		path,
 		[`simulator( 'spectre )`, `design( "${library}" "${cell}" "schematic")`, "run()", ""].join("\n"),
+		"utf8",
+	);
+}
+
+async function writeSweepOcean(
+	path: string,
+	library: string,
+	cell: string,
+	activeTest: string,
+	disabledTests: string[],
+): Promise<void> {
+	await writeFile(
+		path,
+		[
+			'ocnSetXLMode("assembler")',
+			`ocnxlTargetCellView( "${library}" "${cell}" "maestro" ?mode "r" )`,
+			`ocnxlBeginTest("${activeTest}")`,
+			...disabledTests.flatMap((test) => [`ocnxlBeginTest("${test}")`, `ocnxlDisableTest("${test}")`]),
+			"ocnxlRun( ?mode 'sweepsAndCorners ?nominalCornerEnabled t)",
+			"",
+		].join("\n"),
 		"utf8",
 	);
 }

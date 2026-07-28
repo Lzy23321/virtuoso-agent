@@ -386,6 +386,54 @@ describe("CLI runner", () => {
 		expect(io.stderrLines[0]).toBe("Error: maestro export requires --cell.");
 	});
 
+	it("requires a test name for Maestro test-scope export", async () => {
+		const io = createCapturedIo();
+
+		const exitCode = await runCli(
+			[
+				"maestro",
+				"export",
+				"--lib",
+				"ota_lib",
+				"--cell",
+				"ota_tb",
+				"--view",
+				"maestro",
+				"--scope",
+				"test",
+				"--json",
+			],
+			io,
+		);
+
+		expect(exitCode).toBe(1);
+		expect(io.stderrLines[0]).toBe("Error: maestro export with --scope test requires --test.");
+	});
+
+	it("rejects an unsupported Maestro export scope", async () => {
+		const io = createCapturedIo();
+
+		const exitCode = await runCli(
+			[
+				"maestro",
+				"export",
+				"--lib",
+				"ota_lib",
+				"--cell",
+				"ota_tb",
+				"--view",
+				"maestro",
+				"--scope",
+				"corners",
+				"--json",
+			],
+			io,
+		);
+
+		expect(exitCode).toBe(1);
+		expect(io.stderrLines[0]).toBe("Error: --scope must be all, top, tests, or test.");
+	});
+
 	it("shows a cellView in the existing managed UI", async () => {
 		const { exitCode, output } = await runManagedCliCommand(
 			["cellview", "show", "--lib", "ota_lib", "--cell", "ota_core", "--view", "schematic"],

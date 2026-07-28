@@ -15,6 +15,7 @@ import {
 	getManagedVirtuosoInstances,
 	listManagedVirtuosoLibraries,
 	listManagedVirtuosoLibraryCellViews,
+	type MaestroExportScope,
 	type ManagedVirtuosoRequest,
 	type RunTaskOptions,
 	runTask,
@@ -299,6 +300,8 @@ interface ParsedBundleExportCommand {
 		cell: string;
 		view: string;
 		outputDirectory?: string;
+		scope?: MaestroExportScope;
+		testName?: string;
 	};
 }
 
@@ -442,13 +445,39 @@ function parseMaestroExportCommand(argv: string[]): ParsedBundleExportCommand | 
 	if (command !== "maestro" || action !== "export") {
 		return { ok: false };
 	}
-	return parseBundleExportCommand(argv, "maestro export");
+	const parsed = parseBundleExportCommand(argv, "maestro export");
+	if (!parsed.ok) {
+		return parsed;
+	}
+	const rawScope = getOptionValue(argv, "--scope");
+	if (rawScope && rawScope !== "all" && rawScope !== "top" && rawScope !== "tests" && rawScope !== "test") {
+		return { ok: false, error: "--scope must be all, top, tests, or test." };
+	}
+	const scope = rawScope as MaestroExportScope | undefined;
+	const testName = getOptionValue(argv, "--test");
+	if (scope === "test" && !testName) {
+		return { ok: false, error: "maestro export with --scope test requires --test." };
+	}
+	if (testName && scope !== "test") {
+		return { ok: false, error: "--test requires --scope test." };
+	}
+	return {
+		ok: true,
+		request: {
+			...parsed.request,
+			scope,
+			testName,
+		},
+	};
 }
 
 function parseSchematicExportCommand(argv: string[]): ParsedBundleExportCommand | IgnoredCommand {
 	const [command, action] = argv;
 	if (command !== "schematic" || action !== "export") {
 		return { ok: false };
+	}
+	if (argv.includes("--scope") || argv.includes("--test")) {
+		return { ok: false, error: "--scope and --test are only supported by maestro export." };
 	}
 	return parseBundleExportCommand(argv, "schematic export");
 }
@@ -536,7 +565,15 @@ function parseManagedVirtuosoOptions(args: string[]): { ok: true; value: Managed
 
 	for (let index = 0; index < args.length; index++) {
 		const arg = args[index];
-		if (arg === "--lib" || arg === "--cell" || arg === "--view" || arg === "--mode" || arg === "--output-dir") {
+		if (
+			arg === "--lib" ||
+			arg === "--cell" ||
+			arg === "--view" ||
+			arg === "--mode" ||
+			arg === "--output-dir" ||
+			arg === "--scope" ||
+			arg === "--test"
+		) {
 			index++;
 			continue;
 		}
@@ -768,7 +805,7 @@ function writeUsage(io: CliIo, toStdout = false): void {
 		"  vab inventory cellviews --lib <lib> --json [--instance-id <id>] [--cds-lib <path>] [--registry-dir <dir>] [--timeout-ms <ms>]",
 	);
 	write(
-		"  vab maestro export --lib <lib> --cell <cell> --view <view> --json [--output-dir <dir>] [--instance-id <id>] [--cds-lib <path>] [--registry-dir <dir>] [--timeout-ms <ms>]",
+		"  vab maestro export --lib <lib> --cell <cell> --view <view> --json [--scope all|top|tests|test] [--test <name>] [--output-dir <dir>] [--instance-id <id>] [--cds-lib <path>] [--registry-dir <dir>] [--timeout-ms <ms>]",
 	);
 	write(
 		"  vab schematic export --lib <lib> --cell <cell> --view <view> --json [--output-dir <dir>] [--instance-id <id>] [--cds-lib <path>] [--registry-dir <dir>] [--timeout-ms <ms>]",

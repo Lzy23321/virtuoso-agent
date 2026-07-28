@@ -250,16 +250,26 @@ export default function (pi: ExtensionAPI) {
 		name: "virtuoso_export",
 		label: "Export Virtuoso Simulation Bundle",
 		description:
-			"Export Cadence-native Spectre and OCEAN artifacts from one schematic or Maestro setup through a live managed Virtuoso instance. Does not run simulation.",
+			"Export Cadence-native Spectre and OCEAN artifacts from one schematic or Maestro setup through a live managed Virtuoso instance. Maestro scope can select all artifacts, only the top-level script, all tests, or one named test. Does not run simulation.",
 		parameters: Type.Object({
 			action: Type.Union([Type.Literal("schematic"), Type.Literal("maestro")]),
 			library: Type.String(),
 			cell: Type.String(),
 			view: Type.String(),
 			outputDirectory: Type.Optional(Type.String({ description: "Optional parent directory for the new bundle." })),
+			scope: Type.Optional(
+				Type.Union([Type.Literal("all"), Type.Literal("top"), Type.Literal("tests"), Type.Literal("test")], {
+					description:
+						"Maestro export selection. all is the default; top exports only maestro.ocn; tests exports every test; test exports one testName.",
+				}),
+			),
+			testName: Type.Optional(Type.String({ description: "Exact Maestro test name. Required when scope is test." })),
 			...managedInstanceParameters,
 		}),
 		async execute(_toolCallId, params) {
+			if (params.action === "schematic" && (params.scope || params.testName)) {
+				return invalidToolInput("scope and testName are only supported when virtuoso_export action is maestro");
+			}
 			const request = {
 				...params,
 				instanceId: params.instanceId ?? boundInstanceId,

@@ -95,6 +95,10 @@ describe("virtuoso-agent pi extension", () => {
 		expect(taskSchema).toContain('"const":"run"');
 		expect(exportSchema).toContain('"const":"schematic"');
 		expect(exportSchema).toContain('"const":"maestro"');
+		expect(exportSchema).toContain('"const":"all"');
+		expect(exportSchema).toContain('"const":"top"');
+		expect(exportSchema).toContain('"const":"tests"');
+		expect(exportSchema).toContain('"const":"test"');
 	});
 
 	it("automatically binds the instance used by a successful business operation", async () => {
@@ -155,10 +159,15 @@ describe("virtuoso-agent pi extension", () => {
 				library: "ota_lib",
 				cell: "ota_tb",
 				view: "maestro",
+				scope: "test",
+				testName: "stb_test",
 			})) as { content: Array<{ text: string }> };
 
 		expect(output.content[0].text).toBe(
 			"Maestro simulation bundle exported without running simulation: /tmp/maestro-bundle. Manifest: /tmp/maestro-bundle/bundle.json",
+		);
+		expect(runtimeMocks.exportManagedMaestroBundle).toHaveBeenCalledWith(
+			expect.objectContaining({ scope: "test", testName: "stb_test" }),
 		);
 	});
 

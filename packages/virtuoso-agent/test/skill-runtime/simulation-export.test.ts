@@ -10,6 +10,17 @@ describe("simulation export SKILL contract", () => {
 		expect(source).toContain("createNetlist(?recreateAll t ?display nil)");
 		expect(source).toContain('?application "Assembler"');
 		expect(source).toContain("axlWriteOceanScriptLCV");
+		expect(source).toContain('topOceanPath = strcat(bundleDir "/maestro/maestro.ocn")');
+		expect(source).toContain('sweepPath = strcat(testDir "/sweep.ocn")');
+		expect(source).toContain("vaSimulationExportWriteSingleOceanScript(singlePath testSession)");
+		expect(source).toContain("vaSimulationExportWriteTestSweepOceanScript(");
+		expect(source).toContain("maeEnableTests(?all t ?enable nil ?session session)");
+		expect(source).toContain("maeEnableTests(?testNames list(testName) ?enable t ?session session)");
+		expect(source).toContain("vaSimulationExportRestoreEnabledTests(session enabledTests)");
+		expect(source).toContain('member(scope list("all" "top" "tests" "test"))');
+		expect(source).toContain('scope == "test" && not(member(requestedTestName tests))');
+		expect(source).toContain('exportTest = includeTests && (scope != "test" || testName == requestedTestName)');
+		expect(source).toContain("procedure(vaSessionPrepareMaestroExportV4");
 		expect(source).toContain("existingSessions = maeGetSessions()");
 		expect(source).toContain("maeGetTestSession");
 		expect(source).toContain("asiGetDesignLibName(testSession)");

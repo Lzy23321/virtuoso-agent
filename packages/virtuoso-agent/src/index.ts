@@ -91,6 +91,7 @@ export type { RunTaskOptions, RunTaskResult } from "./runtime/workflows/run-task
 export { runTask } from "./runtime/workflows/run-task.ts";
 export type {
 	ExportSimulationBundleRequest,
+	MaestroExportScope,
 	SimulationBundleKind,
 	SimulationBundleResult,
 } from "./runtime/workflows/simulation-bundle.ts";

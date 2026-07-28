@@ -11,12 +11,15 @@ import { fail, ok, type RuntimeResult } from "../core/result.ts";
 import type { ManagedVirtuosoRequest } from "./managed-virtuoso.ts";
 
 export type SimulationBundleKind = "schematic" | "maestro";
+export type MaestroExportScope = "all" | "top" | "tests" | "test";
 
 export interface ExportSimulationBundleRequest extends ManagedVirtuosoRequest {
 	library: string;
 	cell: string;
 	view: string;
 	outputDirectory?: string;
+	scope?: MaestroExportScope;
+	testName?: string;
 }
 
 export interface SimulationBundleResult {
@@ -39,18 +42,20 @@ interface PreparedMaestroTest {
 	name: string;
 	enabled: boolean;
 	singleOceanPath: string;
+	sweepOceanPath: string;
 	netlistPath: string;
 	design: CellViewRef;
 }
 
 interface PreparedMaestro {
-	topOceanPath: string;
+	scope: MaestroExportScope;
+	topOceanPath: string | null;
 	virtuosoVersion: string;
 	tests: PreparedMaestroTest[];
 }
 
 interface BundleArtifact {
-	kind: "spectre-netlist" | "ocean-single" | "ocean-xl";
+	kind: "spectre-netlist" | "ocean-maestro" | "ocean-single" | "ocean-sweep";
 	format: "spectre-scs" | "ocean" | "ocean-xl";
 	path: string;
 	directory?: string;
@@ -65,10 +70,12 @@ interface MaestroBundleTest {
 	status: "complete";
 	design: CellViewRef;
 	singleOcean: BundleArtifact;
+	sweepOcean: BundleArtifact;
 	netlist: BundleArtifact;
 }
 
-const BUNDLE_SCHEMA_VERSION = 1;
+const SCHEMATIC_BUNDLE_SCHEMA_VERSION = 1;
+const MAESTRO_BUNDLE_SCHEMA_VERSION = 2;
 
 export async function exportManagedSchematicBundle(
 	request: ExportSimulationBundleRequest,
@@ -121,7 +128,7 @@ export async function exportManagedSchematicBundle(
 		return netlistArtifact;
 	}
 	const manifestValue = {
-		schemaVersion: BUNDLE_SCHEMA_VERSION,
+		schemaVersion: SCHEMATIC_BUNDLE_SCHEMA_VERSION,
 		kind: "schematic-netlist-bundle",
 		target,
 		generatedAt,
@@ -155,6 +162,14 @@ export async function exportManagedSchematicBundle(
 export async function exportManagedMaestroBundle(
 	request: ExportSimulationBundleRequest,
 ): Promise<RuntimeResult<SimulationBundleResult>> {
+	const scope = request.scope ?? "all";
+	if (scope === "test" && !request.testName) {
+		return fail({
+			type: "maestro_test_name_required",
+			stage: "bundle_prepare",
+			message: "testName is required when Maestro export scope is test.",
+		});
+	}
 	const resolvedInstance = await resolveBundleInstance(request);
 	if (!resolvedInstance.ok) {
 		return resolvedInstance;
@@ -162,8 +177,13 @@ export async function exportManagedMaestroBundle(
 	const target = toTarget(request);
 	const bundleDirectory = resolveBundleDirectory(request, resolvedInstance.value, "maestro");
 	try {
-		await mkdir(join(bundleDirectory, "maestro"), { recursive: true });
-		await mkdir(join(bundleDirectory, "tests"), { recursive: true });
+		await mkdir(bundleDirectory, { recursive: true });
+		if (scope === "all" || scope === "top") {
+			await mkdir(join(bundleDirectory, "maestro"), { recursive: true });
+		}
+		if (scope === "all" || scope === "tests" || scope === "test") {
+			await mkdir(join(bundleDirectory, "tests"), { recursive: true });
+		}
 	} catch (error) {
 		return bundleIoFailure("bundle_prepare", bundleDirectory, error);
 	}
@@ -172,36 +192,51 @@ export async function exportManagedMaestroBundle(
 		resolvedInstance.value,
 		request.timeoutMs,
 		(resultPath, exportSkillPath) =>
-			`unless(isCallable('vaSessionPrepareMaestroExport) load(${skillString(
+			`unless(isCallable('vaSessionPrepareMaestroExportV4) load(${skillString(
 				exportSkillPath,
-			)}))\nvaSessionPrepareMaestroExport(${skillString(
+			)}))\nvaSessionPrepareMaestroExportV4(${skillString(
 				request.library,
 			)} ${skillString(request.cell)} ${skillString(request.view)} ${skillString(bundleDirectory)} ${skillString(
-				resultPath,
-			)})`,
+				scope,
+			)} ${skillString(request.testName ?? "")} ${skillString(resultPath)})`,
 	);
 	if (!prepared.ok) {
 		return prepared;
 	}
 
 	const generatedAt = new Date().toISOString();
-	const topValidation = await validateMaestroOcean(prepared.value.topOceanPath, target, prepared.value.tests);
-	if (!topValidation.ok) {
-		return topValidation;
-	}
-	const topArtifact = await describeArtifact(bundleDirectory, "ocean-xl", "ocean-xl", prepared.value.topOceanPath);
-	if (!topArtifact.ok) {
-		return topArtifact;
+	const validationChecks: string[] = [];
+	let topArtifact: BundleArtifact | undefined;
+	if (prepared.value.topOceanPath) {
+		const topValidation = await validateTopLevelMaestroOcean(prepared.value.topOceanPath, target);
+		if (!topValidation.ok) {
+			return topValidation;
+		}
+		const described = await describeArtifact(
+			bundleDirectory,
+			"ocean-maestro",
+			"ocean-xl",
+			prepared.value.topOceanPath,
+		);
+		if (!described.ok) {
+			return described;
+		}
+		topArtifact = described.value;
+		validationChecks.push(...topValidation.value);
 	}
 
 	const tests: MaestroBundleTest[] = [];
-	const artifacts: ArtifactRef[] = [toArtifactRef(topArtifact.value, bundleDirectory, generatedAt)];
+	const artifacts: ArtifactRef[] = topArtifact ? [toArtifactRef(topArtifact, bundleDirectory, generatedAt)] : [];
 	for (const test of prepared.value.tests) {
 		const testDirectory = join(bundleDirectory, "tests", formatTestIndex(test.index));
 		const netlistDirectory = join(testDirectory, "netlist");
 		const singleValidation = await validateSingleOcean(test.singleOceanPath, test.design);
 		if (!singleValidation.ok) {
 			return singleValidation;
+		}
+		const sweepValidation = await validateTestSweepOcean(test.sweepOceanPath, target, test.name);
+		if (!sweepValidation.ok) {
+			return sweepValidation;
 		}
 		const copied = await copyNetlistDirectory(test.netlistPath, netlistDirectory);
 		if (!copied.ok) {
@@ -215,6 +250,10 @@ export async function exportManagedMaestroBundle(
 		const singleArtifact = await describeArtifact(bundleDirectory, "ocean-single", "ocean", test.singleOceanPath);
 		if (!singleArtifact.ok) {
 			return singleArtifact;
+		}
+		const sweepArtifact = await describeArtifact(bundleDirectory, "ocean-sweep", "ocean-xl", test.sweepOceanPath);
+		if (!sweepArtifact.ok) {
+			return sweepArtifact;
 		}
 		const netlistArtifact = await describeArtifact(
 			bundleDirectory,
@@ -234,11 +273,13 @@ export async function exportManagedMaestroBundle(
 			status: "complete",
 			design: test.design,
 			singleOcean: singleArtifact.value,
+			sweepOcean: sweepArtifact.value,
 			netlist: netlistArtifact.value,
 		};
 		tests.push(testValue);
 		artifacts.push(
 			toArtifactRef(singleArtifact.value, bundleDirectory, generatedAt),
+			toArtifactRef(sweepArtifact.value, bundleDirectory, generatedAt),
 			toArtifactRef(netlistArtifact.value, bundleDirectory, generatedAt),
 		);
 		try {
@@ -250,7 +291,10 @@ export async function exportManagedMaestroBundle(
 						name: test.name,
 						enabled: test.enabled,
 						design: test.design,
-						singleOcean: "single.ocn",
+						oceanScripts: {
+							singlePoint: "single.ocn",
+							sweep: "sweep.ocn",
+						},
 						primaryNetlist: "netlist/input.scs",
 					},
 					null,
@@ -262,11 +306,20 @@ export async function exportManagedMaestroBundle(
 			return bundleIoFailure("test_manifest_write", testDirectory, error);
 		}
 	}
+	if (tests.length > 0) {
+		validationChecks.push(
+			"each single-point OCEAN script contains simulator, design, and run commands",
+			"each per-test sweep OCEAN script selects only its target test in sweepsAndCorners mode",
+			"each test has a freshly generated Spectre input.scs matching its configured design",
+		);
+	}
 
 	const manifestValue = {
-		schemaVersion: BUNDLE_SCHEMA_VERSION,
+		schemaVersion: MAESTRO_BUNDLE_SCHEMA_VERSION,
 		kind: "maestro-simulation-bundle",
 		target,
+		scope,
+		...(scope === "test" ? { requestedTestName: request.testName } : {}),
 		generatedAt,
 		generator: {
 			virtuosoVersion: prepared.value.virtuosoVersion,
@@ -275,15 +328,11 @@ export async function exportManagedMaestroBundle(
 			openMode: "read-only",
 			simulationExecuted: false,
 		},
-		topLevel: topArtifact.value,
+		...(topArtifact ? { topLevelOcean: topArtifact } : {}),
 		tests,
 		validation: {
 			status: "passed",
-			checks: [
-				...topValidation.value,
-				"each single-point OCEAN script contains simulator, design, and run commands",
-				"each test has a freshly generated Spectre input.scs matching its configured design",
-			],
+			checks: validationChecks,
 		},
 		warnings: [],
 	};
@@ -389,36 +438,58 @@ async function validateSpectreNetlist(path: string, target: CellViewRef): Promis
 	return ok(checks.map(([, description]) => description));
 }
 
-async function validateMaestroOcean(
-	path: string,
-	target: CellViewRef,
-	tests: PreparedMaestroTest[],
-): Promise<RuntimeResult<string[]>> {
+async function validateTopLevelMaestroOcean(path: string, target: CellViewRef): Promise<RuntimeResult<string[]>> {
 	const content = await readRequiredText(path, "maestro_ocean_validation");
 	if (!content.ok) {
 		return content;
 	}
-	const missingTests = tests
-		.filter((test) => !content.value.includes(`ocnxlBeginTest("${test.name}")`))
-		.map((test) => test.name);
 	const targetCall = `ocnxlTargetCellView( "${target.library}" "${target.cell}" "${target.view}"`;
 	if (
 		!content.value.includes('ocnSetXLMode("assembler")') ||
 		!content.value.includes(targetCall) ||
-		missingTests.length > 0
+		!content.value.includes("ocnxlBeginTest(") ||
+		!/ocnxlRun\(\s*\?mode\s+'sweepsAndCorners\b/.test(content.value)
 	) {
 		return fail({
-			type: "maestro_ocean_invalid",
+			type: "maestro_sweeps_ocean_invalid",
 			stage: "bundle_validation",
-			message: `Top-level Maestro OCEAN validation failed: ${path}`,
-			details: { path, missingTests },
+			message: `Maestro Sweeps and Corners OCEAN validation failed: ${path}`,
+			details: { path },
 		});
 	}
 	return ok([
-		"top-level OCEAN script uses Assembler mode",
-		"top-level OCEAN script targets the expected Maestro cellview",
-		"top-level OCEAN script contains every discovered test",
+		"Sweeps and Corners OCEAN script uses Assembler mode",
+		"Sweeps and Corners OCEAN script targets the expected Maestro cellview",
+		"Sweeps and Corners OCEAN script contains Maestro tests",
+		"Sweeps and Corners OCEAN script selects sweepsAndCorners run mode",
 	]);
+}
+
+async function validateTestSweepOcean(
+	path: string,
+	target: CellViewRef,
+	testName: string,
+): Promise<RuntimeResult<void>> {
+	const content = await readRequiredText(path, "test_sweep_ocean_validation");
+	if (!content.ok) {
+		return content;
+	}
+	const targetCall = `ocnxlTargetCellView( "${target.library}" "${target.cell}" "${target.view}"`;
+	if (
+		!content.value.includes('ocnSetXLMode("assembler")') ||
+		!content.value.includes(targetCall) ||
+		!content.value.includes(`ocnxlBeginTest("${testName}")`) ||
+		content.value.includes(`ocnxlDisableTest("${testName}")`) ||
+		!/ocnxlRun\(\s*\?mode\s+'sweepsAndCorners\b/.test(content.value)
+	) {
+		return fail({
+			type: "test_sweep_ocean_invalid",
+			stage: "bundle_validation",
+			message: `Per-test sweep OCEAN validation failed: ${path}`,
+			details: { path, testName },
+		});
+	}
+	return ok(undefined);
 }
 
 async function validateSingleOcean(path: string, target: CellViewRef): Promise<RuntimeResult<void>> {

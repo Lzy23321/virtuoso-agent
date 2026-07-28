@@ -43,7 +43,7 @@ procedure(vaSessionExportSchematicNetlist(library cell view resultPath)
 	)
 )
 
-procedure(vaSimulationExportWriteOceanScript(path testSession)
+procedure(vaSimulationExportWriteSingleOceanScript(path testSession)
 	let((filePointer result)
 		when(isFile(path)
 			deleteFile(path)
@@ -61,12 +61,48 @@ procedure(vaSimulationExportWriteOceanScript(path testSession)
 	)
 )
 
-procedure(vaSimulationExportPrepareMaestro(library cell view bundleDir)
+procedure(vaSimulationExportRestoreEnabledTests(session enabledTests)
+	maeEnableTests(?all t ?enable nil ?session session)
+	when(enabledTests
+		maeEnableTests(?testNames enabledTests ?enable t ?session session)
+	)
+)
+
+procedure(vaSimulationExportWriteTestSweepOceanScript(path library cell view session testName enabledTests)
+	let((result)
+		when(isFile(path)
+			deleteFile(path)
+		)
+		unwindProtect(
+			progn(
+				maeEnableTests(?all t ?enable nil ?session session)
+				maeEnableTests(?testNames list(testName) ?enable t ?session session)
+				result = axlWriteOceanScriptLCV(path library cell view)
+				unless(result
+					error("Could not write sweep OCEAN script %s for test %s.\n" path testName)
+				)
+			)
+			vaSimulationExportRestoreEnabledTests(session enabledTests)
+		)
+		t
+	)
+)
+
+procedure(vaSimulationExportPrepareMaestro(library cell view bundleDir scope requestedTestName)
 	let((
-		existingSessions session closeSession tests enabledTests topOceanPath topResult
-		testItems separator index testName testSession testDir singlePath enabled
+		existingSessions session closeSession tests enabledTests enabledStateCaptured topOceanPath topResult
+		includeTop includeTests testItems separator index testName exportTest testSession
+		testDir singlePath sweepPath enabled topOceanJson
 		designLibrary designCell designView netlistResult netlistDir simInputFile netlistPath
 	)
+		unless(member(scope list("all" "top" "tests" "test"))
+			error("Unsupported Maestro export scope: %s.\n" scope)
+		)
+		when(scope == "test" && requestedTestName == ""
+			error("A test name is required for Maestro export scope test.\n")
+		)
+		includeTop = member(scope list("all" "top"))
+		includeTests = member(scope list("all" "tests" "test"))
 		existingSessions = maeGetSessions()
 		session = maeOpenSetup(
 			library
@@ -86,11 +122,19 @@ procedure(vaSimulationExportPrepareMaestro(library cell view bundleDir)
 		unwindProtect(
 			progn(
 				tests = maeGetSetup(?typeName "tests" ?enabled 'all ?session session)
-				enabledTests = maeGetSetup(?typeName "tests" ?enabled t ?session session)
-				topOceanPath = strcat(bundleDir "/maestro/maestro.ocn")
-				topResult = axlWriteOceanScriptLCV(topOceanPath library cell view)
-				unless(topResult
-					error("Could not export top-level Maestro OCEAN script.\n")
+				when(includeTests
+					enabledTests = maeGetSetup(?typeName "tests" ?enabled t ?session session)
+					enabledStateCaptured = t
+				)
+				when(scope == "test" && not(member(requestedTestName tests))
+					error("Could not find Maestro test %s.\n" requestedTestName)
+				)
+				when(includeTop
+					topOceanPath = strcat(bundleDir "/maestro/maestro.ocn")
+					topResult = axlWriteOceanScriptLCV(topOceanPath library cell view)
+					unless(topResult
+						error("Could not export top-level Maestro OCEAN script.\n")
+					)
 				)
 
 				testItems = ""
@@ -98,75 +142,93 @@ procedure(vaSimulationExportPrepareMaestro(library cell view bundleDir)
 				index = 0
 				foreach(testName tests
 					index = index + 1
-					testDir = sprintf(nil "%s/tests/%03d" bundleDir index)
-					unless(isDir(testDir)
-						createDir(testDir)
-					)
-					singlePath = strcat(testDir "/single.ocn")
-					testSession = maeGetTestSession(testName ?session session)
-					unless(testSession
-						error("Could not get test session for %s.\n" testName)
-					)
-
-					designLibrary = asiGetDesignLibName(testSession)
-					designCell = asiGetDesignCellName(testSession)
-					designView = asiGetDesignViewName(testSession)
-					unless(designLibrary && designCell && designView
-						error("Could not resolve the design for test %s.\n" testName)
-					)
-
-					vaSimulationExportWriteOceanScript(singlePath testSession)
-					netlistResult = asiNetlist(testSession)
-					unless(netlistResult
-						error("Could not netlist Maestro test %s.\n" testName)
-					)
-					netlistDir = asiGetNetlistDir(testSession)
-					simInputFile = asiGetSimInputFileName(testSession)
-					unless(netlistDir && simInputFile
-						error("Could not resolve the generated netlist for test %s.\n" testName)
-					)
-					netlistPath = strcat(netlistDir "/" simInputFile)
-					unless(isFile(netlistPath)
-						error("Generated netlist does not exist for test %s: %s.\n" testName netlistPath)
-					)
-
-					enabled = if(member(testName enabledTests) then t else nil)
-					testItems = strcat(
-						testItems
-						separator
-						sprintf(
-							nil
-							"{\"index\":%L,\"name\":%s,\"enabled\":%s,\"singleOceanPath\":%s,\"netlistPath\":%s,\"design\":{\"library\":%s,\"cell\":%s,\"view\":%s}}"
-							index
-							vaJsonString(testName)
-							vaSimulationExportBoolean(enabled)
-							vaJsonString(singlePath)
-							vaJsonString(netlistPath)
-							vaJsonString(designLibrary)
-							vaJsonString(designCell)
-							vaJsonString(designView)
+					exportTest = includeTests && (scope != "test" || testName == requestedTestName)
+					when(exportTest
+						testDir = sprintf(nil "%s/tests/%03d" bundleDir index)
+						unless(isDir(testDir)
+							createDir(testDir)
 						)
+						singlePath = strcat(testDir "/single.ocn")
+						sweepPath = strcat(testDir "/sweep.ocn")
+						testSession = maeGetTestSession(testName ?session session)
+						unless(testSession
+							error("Could not get test session for %s.\n" testName)
+						)
+
+						designLibrary = asiGetDesignLibName(testSession)
+						designCell = asiGetDesignCellName(testSession)
+						designView = asiGetDesignViewName(testSession)
+						unless(designLibrary && designCell && designView
+							error("Could not resolve the design for test %s.\n" testName)
+						)
+
+						vaSimulationExportWriteSingleOceanScript(singlePath testSession)
+						vaSimulationExportWriteTestSweepOceanScript(
+							sweepPath library cell view session testName enabledTests
+						)
+						netlistResult = asiNetlist(testSession)
+						unless(netlistResult
+							error("Could not netlist Maestro test %s.\n" testName)
+						)
+						netlistDir = asiGetNetlistDir(testSession)
+						simInputFile = asiGetSimInputFileName(testSession)
+						unless(netlistDir && simInputFile
+							error("Could not resolve the generated netlist for test %s.\n" testName)
+						)
+						netlistPath = strcat(netlistDir "/" simInputFile)
+						unless(isFile(netlistPath)
+							error("Generated netlist does not exist for test %s: %s.\n" testName netlistPath)
+						)
+
+						enabled = if(member(testName enabledTests) then t else nil)
+						testItems = strcat(
+							testItems
+							separator
+							sprintf(
+								nil
+								"{\"index\":%L,\"name\":%s,\"enabled\":%s,\"singleOceanPath\":%s,\"sweepOceanPath\":%s,\"netlistPath\":%s,\"design\":{\"library\":%s,\"cell\":%s,\"view\":%s}}"
+								index
+								vaJsonString(testName)
+								vaSimulationExportBoolean(enabled)
+								vaJsonString(singlePath)
+								vaJsonString(sweepPath)
+								vaJsonString(netlistPath)
+								vaJsonString(designLibrary)
+								vaJsonString(designCell)
+								vaJsonString(designView)
+							)
+						)
+						separator = ","
 					)
-					separator = ","
 				)
+				topOceanJson = if(topOceanPath then vaJsonString(topOceanPath) else "null")
 				sprintf(
 					nil
-					"{\"topOceanPath\":%s,\"virtuosoVersion\":%s,\"tests\":[%s]}"
-					vaJsonString(topOceanPath)
+					"{\"scope\":%s,\"topOceanPath\":%s,\"virtuosoVersion\":%s,\"tests\":[%s]}"
+					vaJsonString(scope)
+					topOceanJson
 					vaJsonString(getVersion(t))
 					testItems
 				)
 			)
-			when(closeSession
-				maeCloseSession(?session session ?simulation "continue")
+			progn(
+				when(enabledStateCaptured
+					vaSimulationExportRestoreEnabledTests(session enabledTests)
+				)
+				when(closeSession
+					maeCloseSession(?session session ?simulation "continue")
+				)
 			)
 		)
 	)
 )
 
-procedure(vaSessionPrepareMaestroExport(library cell view bundleDir resultPath)
+procedure(vaSessionPrepareMaestroExportV4(library cell view bundleDir scope requestedTestName resultPath)
 	let((captured)
-		captured = errset(vaSimulationExportPrepareMaestro(library cell view bundleDir) t)
+		captured = errset(
+			vaSimulationExportPrepareMaestro(library cell view bundleDir scope requestedTestName)
+			t
+		)
 		if(captured && car(captured) then
 			vaSessionWriteResult(resultPath vaOkEnvelope(car(captured)))
 		else
