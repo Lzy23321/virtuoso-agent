@@ -1,5 +1,3 @@
-export type { SpectreRunRequest, SpectreRunResult } from "./runtime/backends/spectre/runner.ts";
-export { runSpectreNetlist } from "./runtime/backends/spectre/runner.ts";
 export type {
 	RequiredVirtuosoUiLaunchRequest,
 	VirtuosoBridgeRunRequest,
@@ -45,8 +43,6 @@ export type {
 	ArtifactRef,
 	CellViewRef,
 } from "./runtime/core/inspection.ts";
-export type { CreateJobRequest, JobArtifacts, JobRecord } from "./runtime/core/job.ts";
-export { createJob, writeJobJsonArtifact, writeJobTextArtifact } from "./runtime/core/job.ts";
 export type { JsonArtifactRef, WriteJsonArtifactRequest } from "./runtime/core/json-artifact.ts";
 export { writeJsonArtifact } from "./runtime/core/json-artifact.ts";
 export type {
@@ -58,13 +54,6 @@ export type {
 export { createDryRunProcessResult, runProcess } from "./runtime/core/process-runner.ts";
 export type { RuntimeError, RuntimeResult } from "./runtime/core/result.ts";
 export { fail, ok } from "./runtime/core/result.ts";
-export type {
-	SimulationBackend,
-	TaskDocument,
-	TaskValidationIssue,
-	TaskValidationResult,
-} from "./runtime/core/task-schema.ts";
-export { validateTaskFile, validateTaskObject } from "./runtime/core/task-schema.ts";
 export type {
 	FinalizedInventoryResult,
 	VirtuosoArtifactContext,
@@ -87,8 +76,6 @@ export {
 	listManagedVirtuosoLibraryCellViews,
 	showManagedVirtuosoCellView,
 } from "./runtime/workflows/managed-virtuoso.ts";
-export type { RunTaskOptions, RunTaskResult } from "./runtime/workflows/run-task.ts";
-export { runTask } from "./runtime/workflows/run-task.ts";
 export type {
 	ExportSimulationBundleRequest,
 	MaestroExportScope,

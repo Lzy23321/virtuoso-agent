@@ -11,10 +11,8 @@ import {
 	getManagedVirtuosoInstances,
 	listManagedVirtuosoLibraries,
 	listManagedVirtuosoLibraryCellViews,
-	runTask,
 	showManagedVirtuosoCellView,
 	startVirtuosoUiSession,
-	validateTaskFile,
 } from "../index.ts";
 
 const managedInstanceParameters = {
@@ -296,38 +294,11 @@ export default function (pi: ExtensionAPI) {
 		},
 	});
 
-	const taskTool = defineTool({
-		name: "virtuoso_task",
-		label: "Validate or Run Virtuoso Task",
-		description: "Validate a Virtuoso task file or run its workflow and return metrics, proposal, and artifacts.",
-		parameters: Type.Object({
-			action: Type.Union([Type.Literal("validate"), Type.Literal("run")]),
-			path: Type.String(),
-		}),
-		async execute(_toolCallId, params) {
-			if (params.action === "validate") {
-				const result = await validateTaskFile(params.path);
-				return {
-					content: [{ type: "text", text: result.ok ? "Task validation finished." : result.error.message }],
-					details: compactAgentOutput(result) as unknown,
-				};
-			}
-			const result = await runTask(params.path);
-			return {
-				content: [
-					{ type: "text", text: result.ok ? `Task finished: ${result.value.jobId}` : result.error.message },
-				],
-				details: compactAgentOutput(result) as unknown,
-			};
-		},
-	});
-
 	pi.registerTool(instancesTool);
 	pi.registerTool(launchInstanceTool);
 	pi.registerTool(inventoryTool);
 	pi.registerTool(cellViewTool);
 	pi.registerTool(exportTool);
-	pi.registerTool(taskTool);
 }
 
 function invalidToolInput(message: string) {

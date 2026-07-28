@@ -17,14 +17,11 @@ import {
 	listManagedVirtuosoLibraryCellViews,
 	type MaestroExportScope,
 	type ManagedVirtuosoRequest,
-	type RunTaskOptions,
-	runTask,
 	showManagedVirtuosoCellView,
 	showVirtuosoCellViewInSession,
 	startVirtuosoUiSession,
 	type VirtuosoBridgeOptions,
 	type VirtuosoSessionOptions,
-	validateTaskFile,
 } from "../index.ts";
 
 /**
@@ -182,46 +179,8 @@ export async function runCli(argv: string[], io: CliIo = consoleIo): Promise<num
 		return 1;
 	}
 
-	const taskValidatePath = getTaskValidatePath(argv);
-	if (taskValidatePath) {
-		const result = await validateTaskFile(taskValidatePath);
-		writeJson(io, result, includeProcessOutput);
-		return result.ok && result.value.issues.length === 0 ? 0 : 1;
-	}
-
-	const runCommand = parseRunTaskCommand(argv);
-	if (runCommand.ok) {
-		const result = await runTask(runCommand.path, runCommand.options);
-		writeJson(io, result, includeProcessOutput);
-		return result.ok ? 0 : 1;
-	}
-	if (runCommand.error) {
-		io.stderr(`Error: ${runCommand.error}`);
-		writeUsage(io);
-		return 1;
-	}
-
 	writeUsage(io);
 	return 1;
-}
-
-function getTaskValidatePath(argv: string[]): string | undefined {
-	const [command, action, path] = argv;
-	if (command !== "task" || action !== "validate") {
-		return undefined;
-	}
-	return path;
-}
-
-interface ParsedRunTaskCommand {
-	ok: true;
-	path: string;
-	options: RunTaskOptions;
-}
-
-interface IgnoredRunTaskCommand {
-	ok: false;
-	error?: string;
 }
 
 interface ParsedSessionStartCommand {
@@ -306,27 +265,6 @@ interface ParsedBundleExportCommand {
 }
 
 type IgnoredCommand = { ok: false; error?: string };
-
-function parseRunTaskCommand(argv: string[]): ParsedRunTaskCommand | IgnoredRunTaskCommand {
-	const [command, path] = argv;
-	if (command !== "run") {
-		return { ok: false };
-	}
-	if (!path || path.startsWith("-")) {
-		return { ok: false, error: "run requires a task file path." };
-	}
-
-	const options = parseRunTaskOptions(argv.slice(2));
-	if (!options.ok) {
-		return options;
-	}
-
-	return {
-		ok: true,
-		path,
-		options: options.value,
-	};
-}
 
 function parseSessionStartCommand(argv: string[]): ParsedSessionStartCommand | IgnoredCommand {
 	const [command, action] = argv;
@@ -619,44 +557,6 @@ function parseManagedVirtuosoOptions(args: string[]): { ok: true; value: Managed
 	return { ok: true, value: options };
 }
 
-function parseRunTaskOptions(args: string[]): { ok: true; value: RunTaskOptions } | IgnoredRunTaskCommand {
-	const options: RunTaskOptions = {};
-
-	for (let index = 0; index < args.length; index++) {
-		const arg = args[index];
-		if (arg === "--json" || arg === "--include-process-output") {
-			continue;
-		}
-		if (arg === "--dry-run") {
-			options.spectre = { ...options.spectre, dryRun: true };
-			continue;
-		}
-		if (arg === "--no-dry-run") {
-			options.spectre = { ...options.spectre, dryRun: false };
-			continue;
-		}
-		if (arg === "--spectre-bin") {
-			const value = args[++index];
-			if (!value || value.startsWith("-")) {
-				return { ok: false, error: "--spectre-bin requires a value." };
-			}
-			options.spectre = { ...options.spectre, spectreBin: value };
-			continue;
-		}
-		if (arg === "--jobs-root") {
-			const value = args[++index];
-			if (!value || value.startsWith("-")) {
-				return { ok: false, error: "--jobs-root requires a value." };
-			}
-			options.jobsRoot = value;
-			continue;
-		}
-		return { ok: false, error: `Unknown run option: ${arg}` };
-	}
-
-	return { ok: true, value: options };
-}
-
 function parseVirtuosoBridgeOptions(args: string[]): { ok: true; value: VirtuosoBridgeOptions } | IgnoredCommand {
 	const options: VirtuosoBridgeOptions = {};
 
@@ -818,9 +718,5 @@ function writeUsage(io: CliIo, toStdout = false): void {
 	);
 	write(
 		"  vab cellview show --lib <lib> --cell <cell> --view <view> --json [--instance-id <id>] [--cds-lib <path>] [--registry-dir <dir>] [--mode r|a|w] [--timeout-ms <ms>]",
-	);
-	write("  vab task validate <task.json> --json");
-	write(
-		"  vab run <task.json> --json [--dry-run|--no-dry-run] [--spectre-bin <path>] [--jobs-root <dir>] [--include-process-output]",
 	);
 }

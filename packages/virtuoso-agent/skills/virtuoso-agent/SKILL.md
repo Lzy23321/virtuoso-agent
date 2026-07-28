@@ -23,7 +23,6 @@ For controlled Virtuoso bridge work, operate only on registered managed instance
 - Follow an include referenced by `input.scs` only when the requested fact cannot be established from the primary file, and inspect only the relevant included file.
 - For questions about what Maestro testbenches test or measure, derive the answer from enabled tests, analyses, outputs, saves, variables, and corners in the manifest and OCEAN files first. Read `input.scs` only when DUT identity or connectivity remains unresolved.
 - Use `virtuoso_cellview` with `action: "show"` when the engineer needs to inspect a cellView in the visible UI, or `action: "current"` to identify the active cellView.
-- Use `virtuoso_task` with `action: "validate"` to validate without running, or `action: "run"` to execute a task workflow.
 
 When an operation reports multiple candidates, ask the user to choose and retry that same operation with `instanceId`; a successful operation automatically binds that instance to the pi session. When no instance exists, do not launch one implicitly—ask for authorization first.
 

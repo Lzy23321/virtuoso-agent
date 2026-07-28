@@ -9,7 +9,7 @@
 	"bin": {
 		"vab": "./dist/cli/main.js"
 	},
-	"files": ["dist", "skill-runtime", "skills", "prompts", "README.md"],
+	"files": ["dist", "skill-runtime", "skills", "README.md"],
 	"exports": {
 		".": {
 			"types": "./dist/index.d.ts",
@@ -22,18 +22,16 @@
 	},
 	"pi": {
 		"extensions": ["./dist/extension/index.js"],
-		"skills": ["./skills"],
-		"prompts": ["./prompts"]
+		"skills": ["./skills"]
 	},
 	"scripts": {
 		"clean": "shx rm -rf dist",
-		"build": "tsgo -p tsconfig.build.json && shx chmod +x dist/cli/main.js",
+		"build": "npm run clean && tsgo -p tsconfig.build.json && shx chmod +x dist/cli/main.js",
 		"test": "vitest --run"
 	},
 	"dependencies": {
 		"@earendil-works/pi-ai": "^0.75.5",
-		"@earendil-works/pi-coding-agent": "^0.75.5",
-		"typebox": "1.1.38"
+		"@earendil-works/pi-coding-agent": "^0.75.5"
 	},
 	"devDependencies": {
 		"@types/node": "24.12.4",

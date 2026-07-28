@@ -7,7 +7,7 @@
 职责边界：
 
 - pi agent：对话、LLM、tool calling、session 和 UI。
-- virtuoso-agent：managed Virtuoso bridge、SKILL/OCEAN/Spectre backend、bundle、权限、job 和结果解析。
+- virtuoso-agent：managed Virtuoso bridge、SKILL/OCEAN/Spectre backend、bundle、权限、仿真生命周期和结果解析。
 
 代码保持三层：
 
@@ -163,18 +163,7 @@ CLI：
 - `virtuoso_export` pi tool
 - `vab schematic export` 和 `vab maestro export` CLI
 
-### 5.3 Task 和 standalone Spectre 基础
-
-- JSON task schema 和校验
-- job 目录及 task、log、result、metrics、proposal artifacts
-- standalone Spectre netlist runner
-- Spectre dry-run、timeout、process output 和失败 artifact
-- `virtuoso_task` pi tool
-- `vab task validate` 和 `vab run`
-
-当前 standalone Spectre runner 尚未解析仿真结果，`metrics.json` 仍为空；`ocean` 和 `ocean-xl` task backend 尚未实现。
-
-### 5.4 已完成验证
+### 5.3 已完成验证
 
 真实验收目标：
 
@@ -199,7 +188,6 @@ test_tb / two_stage_amp_tb / maestro
 - 尚不支持 scalar output、spec evaluation 或 waveform 读取。
 - 尚不支持 schematic/Maestro 修改。
 - 尚不支持 instance 创建、删除、连线或从零创建设计。
-- 当前 `TaskDocument` 是 standalone runner 的初始 schema，还不是 Replay/Modify/Create 的最终 IR。
 
 ## 7. 下一阶段
 
@@ -238,7 +226,6 @@ P1 完成标准：
 - 读取 Spectre raw result 和 waveform。
 - 支持按 test/corner/sweep point 查询结果。
 - 支持两个 job 的 scalar、spec 和 waveform comparison。
-- 补齐 standalone Spectre runner 的 metrics extraction。
 - 增加 bundle/job retention 和 cleanup 策略。
 
 ### P3：低风险 Simulation Modify

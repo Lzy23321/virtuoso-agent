@@ -9,10 +9,8 @@ const runtimeMocks = vi.hoisted(() => ({
 	getManagedVirtuosoInstances: vi.fn(),
 	listManagedVirtuosoLibraries: vi.fn(),
 	listManagedVirtuosoLibraryCellViews: vi.fn(),
-	runTask: vi.fn(),
 	showManagedVirtuosoCellView: vi.fn(),
 	startVirtuosoUiSession: vi.fn(),
-	validateTaskFile: vi.fn(),
 }));
 
 vi.mock("../../src/index.ts", () => ({
@@ -33,7 +31,7 @@ describe("virtuoso-agent pi extension", () => {
 		vi.clearAllMocks();
 	});
 
-	it("registers the consolidated six-tool interface", () => {
+	it("registers the consolidated five-tool interface", () => {
 		const tools: CapturedTool[] = [];
 		const pi = {
 			registerTool(tool: unknown) {
@@ -49,12 +47,12 @@ describe("virtuoso-agent pi extension", () => {
 			"virtuoso_inventory",
 			"virtuoso_cellview",
 			"virtuoso_export",
-			"virtuoso_task",
 		]);
 		expect(tools.every((tool) => (tool.parameters as { type?: string }).type === "object")).toBe(true);
 		expect(tools.map((tool) => tool.name)).not.toContain("virtuoso_use_instance");
 		expect(tools.map((tool) => tool.name)).not.toContain("virtuoso_get_current_cellview");
 		expect(tools.map((tool) => tool.name)).not.toContain("virtuoso_show_cellview");
+		expect(tools.map((tool) => tool.name)).not.toContain("virtuoso_task");
 		expect(tools.map((tool) => tool.name)).not.toContain("virtuoso_task_validate");
 		expect(tools.map((tool) => tool.name)).not.toContain("virtuoso_run_task");
 	});
@@ -75,24 +73,19 @@ describe("virtuoso-agent pi extension", () => {
 		const cellViewParameters = tools.find((tool) => tool.name === "virtuoso_cellview")?.parameters as {
 			type?: string;
 		};
-		const taskParameters = tools.find((tool) => tool.name === "virtuoso_task")?.parameters as { type?: string };
 		const exportParameters = tools.find((tool) => tool.name === "virtuoso_export")?.parameters as {
 			type?: string;
 		};
 		expect(inventoryParameters.type).toBe("object");
 		expect(cellViewParameters.type).toBe("object");
-		expect(taskParameters.type).toBe("object");
 		expect(exportParameters.type).toBe("object");
 		const inventorySchema = JSON.stringify(inventoryParameters);
 		const cellViewSchema = JSON.stringify(cellViewParameters);
-		const taskSchema = JSON.stringify(taskParameters);
 		const exportSchema = JSON.stringify(exportParameters);
 		expect(inventorySchema).toContain('"const":"libraries"');
 		expect(inventorySchema).toContain('"const":"cellviews"');
 		expect(cellViewSchema).toContain('"const":"current"');
 		expect(cellViewSchema).toContain('"const":"show"');
-		expect(taskSchema).toContain('"const":"validate"');
-		expect(taskSchema).toContain('"const":"run"');
 		expect(exportSchema).toContain('"const":"schematic"');
 		expect(exportSchema).toContain('"const":"maestro"');
 		expect(exportSchema).toContain('"const":"all"');
