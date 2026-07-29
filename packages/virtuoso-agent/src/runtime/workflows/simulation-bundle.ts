@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { cp, mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { cp, mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { dirname, join, relative, resolve } from "node:path";
 import { executeVirtuosoBridgeSessionCommand, skillString } from "../backends/virtuoso/bridge.ts";
 import {
@@ -11,7 +11,10 @@ import { fail, ok, type RuntimeResult } from "../core/result.ts";
 import type { ManagedVirtuosoRequest } from "./managed-virtuoso.ts";
 
 export type SimulationBundleKind = "schematic" | "maestro";
-export type MaestroExportScope = "all" | "top" | "tests" | "test";
+export type MaestroExportScope = "none" | "all" | "top" | "tests" | "test";
+export type MaestroOutputExportMode = "none" | "definitions" | "results" | "all";
+export type MaestroSchematicInstancesMode = "none" | "top-level";
+export type SchematicNetlistMode = "none" | "spectre";
 
 export interface ExportSimulationBundleRequest extends ManagedVirtuosoRequest {
 	library: string;
@@ -20,6 +23,11 @@ export interface ExportSimulationBundleRequest extends ManagedVirtuosoRequest {
 	outputDirectory?: string;
 	scope?: MaestroExportScope;
 	testName?: string;
+	outputs?: MaestroOutputExportMode;
+	historyName?: string;
+	schematicInstances?: MaestroSchematicInstancesMode;
+	outputTestName?: string;
+	netlist?: SchematicNetlistMode;
 }
 
 export interface SimulationBundleResult {
@@ -52,11 +60,24 @@ interface PreparedMaestro {
 	topOceanPath: string | null;
 	virtuosoVersion: string;
 	tests: PreparedMaestroTest[];
+	outputsMode: MaestroOutputExportMode;
+	outputDefinitionsPath: string | null;
+	outputResultsPath: string | null;
+	outputResultsHistoryName: string | null;
+	schematicInstancesMode: MaestroSchematicInstancesMode;
+	schematicInstancesPath: string | null;
 }
 
 interface BundleArtifact {
-	kind: "spectre-netlist" | "ocean-maestro" | "ocean-single" | "ocean-sweep";
-	format: "spectre-scs" | "ocean" | "ocean-xl";
+	kind:
+		| "spectre-netlist"
+		| "ocean-maestro"
+		| "ocean-single"
+		| "ocean-sweep"
+		| "output-definitions"
+		| "output-results"
+		| "schematic-instances";
+	format: "spectre-scs" | "ocean" | "ocean-xl" | "csv" | "json";
 	path: string;
 	directory?: string;
 	originalPath?: string;
@@ -74,12 +95,59 @@ interface MaestroBundleTest {
 	netlist: BundleArtifact;
 }
 
+interface SchematicPoint {
+	x: number;
+	y: number;
+}
+
+interface SchematicBoundingBox {
+	lowerLeft: SchematicPoint;
+	upperRight: SchematicPoint;
+	width: number;
+	height: number;
+}
+
+interface SchematicDirectInstance {
+	name: string;
+	master: CellViewRef;
+	transform: {
+		origin: SchematicPoint;
+		orientation: string;
+		magnification: number;
+	};
+	boundingBox: SchematicBoundingBox;
+}
+
+interface SchematicInstancesEntry {
+	design: CellViewRef;
+	tests: string[];
+	boundingBox: SchematicBoundingBox;
+	directInstanceCount: number;
+	instances: SchematicDirectInstance[];
+}
+
+interface SchematicInstancesExport {
+	schemaVersion: 1;
+	hierarchyPolicy: "top-level-only";
+	recursive: false;
+	schematics: SchematicInstancesEntry[];
+}
+
 const SCHEMATIC_BUNDLE_SCHEMA_VERSION = 1;
 const MAESTRO_BUNDLE_SCHEMA_VERSION = 2;
 
 export async function exportManagedSchematicBundle(
 	request: ExportSimulationBundleRequest,
 ): Promise<RuntimeResult<SimulationBundleResult>> {
+	const netlist = request.netlist ?? "spectre";
+	const schematicInstances = request.schematicInstances ?? "none";
+	if (netlist === "none" && schematicInstances === "none") {
+		return fail({
+			type: "schematic_export_empty",
+			stage: "bundle_prepare",
+			message: "Schematic export must select the Spectre netlist, top-level instances, or both.",
+		});
+	}
 	const resolvedInstance = await resolveBundleInstance(request);
 	if (!resolvedInstance.ok) {
 		return resolvedInstance;
@@ -87,60 +155,103 @@ export async function exportManagedSchematicBundle(
 	const target = toTarget(request);
 	const bundleDirectory = resolveBundleDirectory(request, resolvedInstance.value, "schematic");
 	const netlistDirectory = join(bundleDirectory, "schematic", "netlist");
+	const schematicInstancesPath = join(bundleDirectory, "schematic", "instances.json");
 	try {
-		await mkdir(dirname(netlistDirectory), { recursive: true });
+		await mkdir(join(bundleDirectory, "schematic"), { recursive: true });
 	} catch (error) {
 		return bundleIoFailure("bundle_prepare", bundleDirectory, error);
 	}
 
-	const exported = await executeExportCommand<ExportedNetlist>(
-		resolvedInstance.value,
-		request.timeoutMs,
-		(resultPath, exportSkillPath) =>
-			`unless(isCallable('vaSessionExportSchematicNetlist) load(${skillString(
-				exportSkillPath,
-			)}))\nvaSessionExportSchematicNetlist(${skillString(
-				request.library,
-			)} ${skillString(request.cell)} ${skillString(request.view)} ${skillString(resultPath)})`,
-	);
-	if (!exported.ok) {
-		return exported;
-	}
-	const copied = await copyNetlistDirectory(exported.value.path, netlistDirectory);
-	if (!copied.ok) {
-		return copied;
-	}
-	const primaryPath = join(netlistDirectory, "input.scs");
-	const validated = await validateSpectreNetlist(primaryPath, target);
-	if (!validated.ok) {
-		return validated;
-	}
 	const generatedAt = new Date().toISOString();
-	const netlistArtifact = await describeArtifact(
-		bundleDirectory,
-		"spectre-netlist",
-		"spectre-scs",
-		primaryPath,
-		netlistDirectory,
-		exported.value.path,
-	);
-	if (!netlistArtifact.ok) {
-		return netlistArtifact;
+	const artifacts: BundleArtifact[] = [];
+	const validationChecks: string[] = [];
+	let virtuosoVersion: string | null = null;
+
+	if (netlist === "spectre") {
+		const exported = await executeExportCommand<ExportedNetlist>(
+			resolvedInstance.value,
+			request.timeoutMs,
+			(resultPath, exportSkillPath) =>
+				`unless(isCallable('vaSessionExportSchematicNetlist) load(${skillString(
+					exportSkillPath,
+				)}))\nvaSessionExportSchematicNetlist(${skillString(
+					request.library,
+				)} ${skillString(request.cell)} ${skillString(request.view)} ${skillString(resultPath)})`,
+		);
+		if (!exported.ok) {
+			return exported;
+		}
+		const copied = await copyNetlistDirectory(exported.value.path, netlistDirectory);
+		if (!copied.ok) {
+			return copied;
+		}
+		const primaryPath = join(netlistDirectory, "input.scs");
+		const validated = await validateSpectreNetlist(primaryPath, target);
+		if (!validated.ok) {
+			return validated;
+		}
+		const described = await describeArtifact(
+			bundleDirectory,
+			"spectre-netlist",
+			"spectre-scs",
+			primaryPath,
+			netlistDirectory,
+			exported.value.path,
+		);
+		if (!described.ok) {
+			return described;
+		}
+		artifacts.push(described.value);
+		validationChecks.push(...validated.value);
+		virtuosoVersion = exported.value.virtuosoVersion ?? null;
 	}
+
+	if (schematicInstances === "top-level") {
+		const exported = await executeExportCommand<ExportedNetlist>(
+			resolvedInstance.value,
+			request.timeoutMs,
+			(resultPath, exportSkillPath) =>
+				`unless(isCallable('vaSessionExportSchematicInstances) load(${skillString(
+					exportSkillPath,
+				)}))\nvaSessionExportSchematicInstances(${skillString(
+					request.library,
+				)} ${skillString(request.cell)} ${skillString(request.view)} ${skillString(
+					schematicInstancesPath,
+				)} ${skillString(resultPath)})`,
+		);
+		if (!exported.ok) {
+			return exported;
+		}
+		const normalized = await normalizeSchematicInstancesExport(exported.value.path);
+		if (!normalized.ok) {
+			return normalized;
+		}
+		const described = await describeArtifact(bundleDirectory, "schematic-instances", "json", exported.value.path);
+		if (!described.ok) {
+			return described;
+		}
+		artifacts.push(described.value);
+		validationChecks.push(
+			"schematic instances artifact contains only direct top-level instances and disables recursive hierarchy export",
+		);
+		virtuosoVersion ??= exported.value.virtuosoVersion ?? null;
+	}
+
 	const manifestValue = {
 		schemaVersion: SCHEMATIC_BUNDLE_SCHEMA_VERSION,
 		kind: "schematic-netlist-bundle",
 		target,
 		generatedAt,
 		generator: {
-			virtuosoVersion: exported.value.virtuosoVersion ?? null,
+			virtuosoVersion,
 			managedInstanceId: resolvedInstance.value.instanceId,
 			simulationExecuted: false,
 		},
-		artifacts: [netlistArtifact.value],
+		selection: { netlist, schematicInstances },
+		artifacts,
 		validation: {
 			status: "passed",
-			checks: validated.value,
+			checks: validationChecks,
 		},
 		warnings: [],
 	};
@@ -153,7 +264,7 @@ export async function exportManagedSchematicBundle(
 		kind: "schematic",
 		bundleDirectory,
 		manifest: manifest.value,
-		artifacts: [toArtifactRef(netlistArtifact.value, bundleDirectory, generatedAt)],
+		artifacts: artifacts.map((artifact) => toArtifactRef(artifact, bundleDirectory, generatedAt)),
 		warnings: [],
 		instance: resolvedInstance.value,
 	});
@@ -163,11 +274,41 @@ export async function exportManagedMaestroBundle(
 	request: ExportSimulationBundleRequest,
 ): Promise<RuntimeResult<SimulationBundleResult>> {
 	const scope = request.scope ?? "all";
+	const outputs = request.outputs ?? "none";
+	const schematicInstances = request.schematicInstances ?? "none";
+	if (request.outputTestName && outputs === "none") {
+		return fail({
+			type: "maestro_output_test_not_applicable",
+			stage: "bundle_prepare",
+			message: "outputTestName requires outputs to be definitions, results, or all.",
+		});
+	}
 	if (scope === "test" && !request.testName) {
 		return fail({
 			type: "maestro_test_name_required",
 			stage: "bundle_prepare",
 			message: "testName is required when Maestro export scope is test.",
+		});
+	}
+	if (request.historyName && outputs !== "results" && outputs !== "all") {
+		return fail({
+			type: "maestro_output_history_not_applicable",
+			stage: "bundle_prepare",
+			message: "historyName is only supported when outputs is results or all.",
+		});
+	}
+	if (scope === "none" && request.testName && schematicInstances !== "top-level") {
+		return fail({
+			type: "maestro_test_name_not_applicable",
+			stage: "bundle_prepare",
+			message: "testName with scope none requires schematicInstances to be top-level.",
+		});
+	}
+	if (scope === "none" && outputs === "none" && schematicInstances === "none") {
+		return fail({
+			type: "maestro_export_empty",
+			stage: "bundle_prepare",
+			message: "Maestro export scope none must select outputs or top-level schematic instances.",
 		});
 	}
 	const resolvedInstance = await resolveBundleInstance(request);
@@ -184,6 +325,15 @@ export async function exportManagedMaestroBundle(
 		if (scope === "all" || scope === "tests" || scope === "test") {
 			await mkdir(join(bundleDirectory, "tests"), { recursive: true });
 		}
+		if (outputs === "definitions" || outputs === "all") {
+			await mkdir(join(bundleDirectory, "outputs", "definitions"), { recursive: true });
+		}
+		if (outputs === "results" || outputs === "all") {
+			await mkdir(join(bundleDirectory, "outputs", "results"), { recursive: true });
+		}
+		if (schematicInstances === "top-level") {
+			await mkdir(join(bundleDirectory, "schematics"), { recursive: true });
+		}
 	} catch (error) {
 		return bundleIoFailure("bundle_prepare", bundleDirectory, error);
 	}
@@ -192,16 +342,58 @@ export async function exportManagedMaestroBundle(
 		resolvedInstance.value,
 		request.timeoutMs,
 		(resultPath, exportSkillPath) =>
-			`unless(isCallable('vaSessionPrepareMaestroExportV4) load(${skillString(
+			`unless(isCallable('vaSessionPrepareMaestroExportV7) load(${skillString(
 				exportSkillPath,
-			)}))\nvaSessionPrepareMaestroExportV4(${skillString(
+			)}))\nvaSessionPrepareMaestroExportV7(${skillString(
 				request.library,
 			)} ${skillString(request.cell)} ${skillString(request.view)} ${skillString(bundleDirectory)} ${skillString(
 				scope,
-			)} ${skillString(request.testName ?? "")} ${skillString(resultPath)})`,
+			)} ${skillString(request.testName ?? "")} ${skillString(outputs)} ${skillString(
+				request.historyName ?? "",
+			)} ${skillString(schematicInstances)} ${skillString(request.outputTestName ?? "")} ${skillString(
+				resultPath,
+			)})`,
 	);
 	if (!prepared.ok) {
 		return prepared;
+	}
+	if (prepared.value.outputsMode !== outputs) {
+		return fail({
+			type: "maestro_output_export_mode_mismatch",
+			stage: "bundle_validation",
+			message: `Cadence returned output mode ${prepared.value.outputsMode}, expected ${outputs}.`,
+		});
+	}
+	if ((outputs === "definitions" || outputs === "all") && !prepared.value.outputDefinitionsPath) {
+		return fail({
+			type: "maestro_output_definitions_missing",
+			stage: "bundle_validation",
+			message: "Cadence did not return the requested aggregate output definitions CSV.",
+		});
+	}
+	if (
+		(outputs === "results" || outputs === "all") &&
+		(!prepared.value.outputResultsPath || !prepared.value.outputResultsHistoryName)
+	) {
+		return fail({
+			type: "maestro_output_results_missing",
+			stage: "bundle_validation",
+			message: "Cadence did not return the requested aggregate output results CSV and history.",
+		});
+	}
+	if (prepared.value.schematicInstancesMode !== schematicInstances) {
+		return fail({
+			type: "maestro_schematic_instances_mode_mismatch",
+			stage: "bundle_validation",
+			message: `Cadence returned schematic instances mode ${prepared.value.schematicInstancesMode}, expected ${schematicInstances}.`,
+		});
+	}
+	if (schematicInstances === "top-level" && !prepared.value.schematicInstancesPath) {
+		return fail({
+			type: "maestro_schematic_instances_missing",
+			stage: "bundle_validation",
+			message: "Cadence did not return the requested aggregate top-level schematic instances artifact.",
+		});
 	}
 
 	const generatedAt = new Date().toISOString();
@@ -314,6 +506,122 @@ export async function exportManagedMaestroBundle(
 		);
 	}
 
+	let outputDefinitionsArtifact: BundleArtifact | undefined;
+	if (prepared.value.outputDefinitionsPath) {
+		const validation = await validateOutputCsv(
+			prepared.value.outputDefinitionsPath,
+			"output_definitions_validation",
+			/^Test,Name,Type,Output,/m,
+		);
+		if (!validation.ok) {
+			return validation;
+		}
+		if (request.outputTestName) {
+			const filtered = await filterOutputCsvByTest(
+				prepared.value.outputDefinitionsPath,
+				/^Test,Name,Type,Output,/,
+				request.outputTestName,
+			);
+			if (!filtered.ok) {
+				return filtered;
+			}
+		}
+		const described = await describeArtifact(
+			bundleDirectory,
+			"output-definitions",
+			"csv",
+			prepared.value.outputDefinitionsPath,
+		);
+		if (!described.ok) {
+			return described;
+		}
+		outputDefinitionsArtifact = described.value;
+		artifacts.push(toArtifactRef(described.value, bundleDirectory, generatedAt));
+		validationChecks.push("output definitions CSV contains one aggregate table with a Test column");
+	}
+
+	let outputResultsArtifact: BundleArtifact | undefined;
+	let outputResultsHistoryName: string | undefined;
+	if (prepared.value.outputResultsPath || prepared.value.outputResultsHistoryName) {
+		if (!prepared.value.outputResultsPath || !prepared.value.outputResultsHistoryName) {
+			return fail({
+				type: "maestro_output_results_incomplete",
+				stage: "bundle_validation",
+				message: "Cadence returned incomplete output results metadata.",
+				details: {
+					outputResultsPath: prepared.value.outputResultsPath,
+					outputResultsHistoryName: prepared.value.outputResultsHistoryName,
+				},
+			});
+		}
+		const validation = await validateOutputCsv(
+			prepared.value.outputResultsPath,
+			"output_results_validation",
+			/^Test,Output,/m,
+		);
+		if (!validation.ok) {
+			return validation;
+		}
+		if (request.outputTestName) {
+			const filtered = await filterOutputCsvByTest(
+				prepared.value.outputResultsPath,
+				/^Test,Output,/,
+				request.outputTestName,
+			);
+			if (!filtered.ok) {
+				return filtered;
+			}
+		}
+		outputResultsHistoryName = prepared.value.outputResultsHistoryName;
+		const resultsDirectory = join(bundleDirectory, "outputs", "results", safeName(outputResultsHistoryName));
+		const resultsPath = join(resultsDirectory, "all.csv");
+		try {
+			await mkdir(resultsDirectory, { recursive: true });
+			await rename(prepared.value.outputResultsPath, resultsPath);
+		} catch (error) {
+			return bundleIoFailure("output_results_move", resultsPath, error, {
+				sourcePath: prepared.value.outputResultsPath,
+			});
+		}
+		const described = await describeArtifact(bundleDirectory, "output-results", "csv", resultsPath);
+		if (!described.ok) {
+			return described;
+		}
+		outputResultsArtifact = described.value;
+		artifacts.push(toArtifactRef(described.value, bundleDirectory, generatedAt));
+		validationChecks.push("output results CSV contains one aggregate Detail view table with a Test column");
+	}
+
+	let schematicInstancesArtifact: BundleArtifact | undefined;
+	let schematicInstancesSummary: { schematics: number; directInstances: number } | undefined;
+	if (prepared.value.schematicInstancesPath) {
+		const normalized = await normalizeSchematicInstancesExport(prepared.value.schematicInstancesPath);
+		if (!normalized.ok) {
+			return normalized;
+		}
+		const described = await describeArtifact(
+			bundleDirectory,
+			"schematic-instances",
+			"json",
+			prepared.value.schematicInstancesPath,
+		);
+		if (!described.ok) {
+			return described;
+		}
+		schematicInstancesArtifact = described.value;
+		schematicInstancesSummary = {
+			schematics: normalized.value.schematics.length,
+			directInstances: normalized.value.schematics.reduce(
+				(total, schematic) => total + schematic.directInstanceCount,
+				0,
+			),
+		};
+		artifacts.push(toArtifactRef(described.value, bundleDirectory, generatedAt));
+		validationChecks.push(
+			"schematic instances artifact contains only direct top-level instances and disables recursive hierarchy export",
+		);
+	}
+
 	const manifestValue = {
 		schemaVersion: MAESTRO_BUNDLE_SCHEMA_VERSION,
 		kind: "maestro-simulation-bundle",
@@ -330,6 +638,35 @@ export async function exportManagedMaestroBundle(
 		},
 		...(topArtifact ? { topLevelOcean: topArtifact } : {}),
 		tests,
+		...(outputs !== "none"
+			? {
+					outputs: {
+						mode: outputs,
+						...(request.outputTestName ? { testName: request.outputTestName } : {}),
+						...(outputDefinitionsArtifact ? { definitions: outputDefinitionsArtifact } : {}),
+						...(outputResultsArtifact && outputResultsHistoryName
+							? {
+									results: {
+										historyName: outputResultsHistoryName,
+										view: "Detail",
+										artifact: outputResultsArtifact,
+									},
+								}
+							: {}),
+					},
+				}
+			: {}),
+		...(schematicInstancesArtifact && schematicInstancesSummary
+			? {
+					schematicInstances: {
+						mode: schematicInstances,
+						hierarchyPolicy: "top-level-only",
+						recursive: false,
+						...schematicInstancesSummary,
+						artifact: schematicInstancesArtifact,
+					},
+				}
+			: {}),
 		validation: {
 			status: "passed",
 			checks: validationChecks,
@@ -531,6 +868,203 @@ async function readRequiredText(path: string, stage: string): Promise<RuntimeRes
 	}
 }
 
+async function validateOutputCsv(path: string, stage: string, header: RegExp): Promise<RuntimeResult<void>> {
+	const content = await readRequiredText(path, stage);
+	if (!content.ok) {
+		return content;
+	}
+	if (!header.test(content.value)) {
+		return fail({
+			type: "maestro_output_csv_invalid",
+			stage: "bundle_validation",
+			message: `Cadence output CSV does not contain the expected aggregate header: ${path}`,
+			details: { path },
+		});
+	}
+	return ok(undefined);
+}
+
+async function filterOutputCsvByTest(path: string, header: RegExp, testName: string): Promise<RuntimeResult<void>> {
+	const content = await readRequiredText(path, "output_test_filter");
+	if (!content.ok) {
+		return content;
+	}
+	const lines = content.value.replace(/\r\n/g, "\n").split("\n");
+	const headerIndex = lines.findIndex((line) => header.test(line));
+	if (headerIndex === -1) {
+		return fail({
+			type: "maestro_output_csv_invalid",
+			stage: "output_test_filter",
+			message: `Could not find the expected Test column while filtering: ${path}`,
+			details: { path, testName },
+		});
+	}
+	const filtered = [
+		...lines.slice(0, headerIndex + 1),
+		...lines.slice(headerIndex + 1).filter((line) => line === "" || readCsvFirstField(line) === testName),
+	];
+	try {
+		await writeFile(path, filtered.join("\n"), "utf8");
+		return ok(undefined);
+	} catch (error) {
+		return bundleIoFailure("output_test_filter", path, error, { testName });
+	}
+}
+
+function readCsvFirstField(line: string): string | undefined {
+	if (!line.startsWith('"')) {
+		const comma = line.indexOf(",");
+		return comma === -1 ? undefined : line.slice(0, comma);
+	}
+	let value = "";
+	for (let index = 1; index < line.length; index++) {
+		const character = line[index];
+		if (character !== '"') {
+			value += character;
+			continue;
+		}
+		if (line[index + 1] === '"') {
+			value += '"';
+			index++;
+			continue;
+		}
+		return line[index + 1] === "," ? value : undefined;
+	}
+	return undefined;
+}
+
+async function normalizeSchematicInstancesExport(path: string): Promise<RuntimeResult<SchematicInstancesExport>> {
+	const content = await readRequiredText(path, "schematic_instances_validation");
+	if (!content.ok) {
+		return content;
+	}
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(content.value);
+	} catch (error) {
+		return fail({
+			type: "maestro_schematic_instances_invalid",
+			stage: "bundle_validation",
+			message: `Cadence schematic instances artifact is not valid JSON: ${path}`,
+			details: { path, error: error instanceof Error ? error.message : String(error) },
+		});
+	}
+	if (!isSchematicInstancesExport(parsed)) {
+		return fail({
+			type: "maestro_schematic_instances_invalid",
+			stage: "bundle_validation",
+			message: `Cadence schematic instances artifact does not match the top-level-only schema: ${path}`,
+			details: { path },
+		});
+	}
+
+	const byDesign = new Map<string, SchematicInstancesEntry>();
+	for (const schematic of parsed.schematics) {
+		const key = JSON.stringify(schematic.design);
+		const existing = byDesign.get(key);
+		if (!existing) {
+			byDesign.set(key, {
+				...schematic,
+				tests: [...new Set(schematic.tests)],
+			});
+			continue;
+		}
+		if (
+			JSON.stringify(existing.boundingBox) !== JSON.stringify(schematic.boundingBox) ||
+			JSON.stringify(existing.instances) !== JSON.stringify(schematic.instances)
+		) {
+			return fail({
+				type: "maestro_schematic_instances_conflict",
+				stage: "bundle_validation",
+				message: `The same schematic design returned conflicting placement data: ${key}`,
+				details: { path, design: schematic.design },
+			});
+		}
+		existing.tests = [...new Set([...existing.tests, ...schematic.tests])];
+	}
+	const normalized: SchematicInstancesExport = {
+		schemaVersion: 1,
+		hierarchyPolicy: "top-level-only",
+		recursive: false,
+		schematics: [...byDesign.values()],
+	};
+	try {
+		await writeFile(path, `${JSON.stringify(normalized, null, 2)}\n`, "utf8");
+		return ok(normalized);
+	} catch (error) {
+		return bundleIoFailure("schematic_instances_write", path, error);
+	}
+}
+
+function isSchematicInstancesExport(value: unknown): value is SchematicInstancesExport {
+	return (
+		isRecord(value) &&
+		value.schemaVersion === 1 &&
+		value.hierarchyPolicy === "top-level-only" &&
+		value.recursive === false &&
+		Array.isArray(value.schematics) &&
+		value.schematics.every(isSchematicInstancesEntry)
+	);
+}
+
+function isSchematicInstancesEntry(value: unknown): value is SchematicInstancesEntry {
+	return (
+		isRecord(value) &&
+		isCellViewRef(value.design) &&
+		Array.isArray(value.tests) &&
+		value.tests.every((test) => typeof test === "string") &&
+		isSchematicBoundingBox(value.boundingBox) &&
+		isFiniteNumber(value.directInstanceCount) &&
+		Array.isArray(value.instances) &&
+		value.instances.every(isSchematicDirectInstance) &&
+		value.directInstanceCount === value.instances.length
+	);
+}
+
+function isSchematicDirectInstance(value: unknown): value is SchematicDirectInstance {
+	return (
+		isRecord(value) &&
+		typeof value.name === "string" &&
+		isCellViewRef(value.master) &&
+		isRecord(value.transform) &&
+		isSchematicPoint(value.transform.origin) &&
+		typeof value.transform.orientation === "string" &&
+		isFiniteNumber(value.transform.magnification) &&
+		isSchematicBoundingBox(value.boundingBox)
+	);
+}
+
+function isCellViewRef(value: unknown): value is CellViewRef {
+	return (
+		isRecord(value) &&
+		typeof value.library === "string" &&
+		typeof value.cell === "string" &&
+		typeof value.view === "string"
+	);
+}
+
+function isSchematicBoundingBox(value: unknown): value is SchematicBoundingBox {
+	return (
+		isRecord(value) &&
+		isSchematicPoint(value.lowerLeft) &&
+		isSchematicPoint(value.upperRight) &&
+		isFiniteNumber(value.width) &&
+		isFiniteNumber(value.height)
+	);
+}
+
+function isSchematicPoint(value: unknown): value is SchematicPoint {
+	return isRecord(value) && isFiniteNumber(value.x) && isFiniteNumber(value.y);
+}
+
+function isFiniteNumber(value: unknown): value is number {
+	return typeof value === "number" && Number.isFinite(value);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null;
+}
+
 async function describeArtifact(
 	bundleDirectory: string,
 	kind: BundleArtifact["kind"],
@@ -571,7 +1105,7 @@ async function writeBundleManifest(
 function toArtifactRef(artifact: BundleArtifact, bundleDirectory: string, createdAt: string): ArtifactRef {
 	return {
 		kind: artifact.kind,
-		format: "text",
+		format: artifact.format === "csv" || artifact.format === "json" ? artifact.format : "text",
 		path: join(bundleDirectory, artifact.path),
 		createdAt,
 	};

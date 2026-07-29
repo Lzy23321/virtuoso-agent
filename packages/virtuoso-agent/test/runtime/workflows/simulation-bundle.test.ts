@@ -64,6 +64,86 @@ describe("simulation bundle export", () => {
 		}
 	});
 
+	it("exports arbitrary schematic placement without generating a Spectre netlist", async () => {
+		const instance = await createFakeManagedInstance("schematic-placement-only");
+		const bridge = respondToCommands(instance, async (command) => {
+			expect(command).not.toContain("vaSessionExportSchematicNetlist");
+			const match = command.match(/vaSessionExportSchematicInstances\("ota_lib" "ota_tb" "schematic" "([^"]+)"/);
+			expect(match).not.toBeNull();
+			const path = match?.[1] ?? "";
+			await writeFile(
+				path,
+				`${JSON.stringify({
+					schemaVersion: 1,
+					hierarchyPolicy: "top-level-only",
+					recursive: false,
+					schematics: [
+						{
+							design: { library: "ota_lib", cell: "ota_tb", view: "schematic" },
+							tests: [],
+							boundingBox: {
+								lowerLeft: { x: 0, y: 0 },
+								upperRight: { x: 2, y: 1 },
+								width: 2,
+								height: 1,
+							},
+							directInstanceCount: 1,
+							instances: [
+								{
+									name: "I0",
+									master: { library: "ota_lib", cell: "ota_core", view: "symbol" },
+									transform: {
+										origin: { x: 1, y: 0.5 },
+										orientation: "R90",
+										magnification: 1,
+									},
+									boundingBox: {
+										lowerLeft: { x: 0.5, y: 0 },
+										upperRight: { x: 1.5, y: 1 },
+										width: 1,
+										height: 1,
+									},
+								},
+							],
+						},
+					],
+				})}\n`,
+				"utf8",
+			);
+			return { path, virtuosoVersion: "IC25.1" };
+		});
+
+		const result = await exportManagedSchematicBundle({
+			instanceId: "schematic-placement-only",
+			registryDir: instance.registryDir,
+			library: "ota_lib",
+			cell: "ota_tb",
+			view: "schematic",
+			netlist: "none",
+			schematicInstances: "top-level",
+			outputDirectory: join(instance.workDir, "bundles"),
+			timeoutMs: 2_000,
+		});
+		await bridge;
+
+		expect(result.ok).toBe(true);
+		if (result.ok) {
+			expect(result.value.artifacts).toEqual([
+				expect.objectContaining({
+					kind: "schematic-instances",
+					format: "json",
+					path: join(result.value.bundleDirectory, "schematic", "instances.json"),
+				}),
+			]);
+			expect(await readdir(join(result.value.bundleDirectory, "schematic"))).toEqual(["instances.json"]);
+			const manifest = JSON.parse(await readFile(result.value.manifest.path, "utf8"));
+			expect(manifest).toMatchObject({
+				selection: { netlist: "none", schematicInstances: "top-level" },
+				artifacts: [{ kind: "schematic-instances", path: "schematic/instances.json" }],
+			});
+		}
+	});
+
 	it("exports and netlists every Maestro test in one session using each test's configured design", async () => {
 		const instance = await createFakeManagedInstance("maestro-bundle");
 		let commandIndex = 0;
@@ -72,7 +152,7 @@ describe("simulation bundle export", () => {
 			expect(commandIndex).toBe(1);
 			expect(command).not.toContain("vaSessionCreateNetlistFromOcean");
 			const bundleMatch = command.match(
-				/vaSessionPrepareMaestroExportV4\("ota_lib" "ota_tb" "maestro" "([^"]+)" "all" ""/,
+				/vaSessionPrepareMaestroExportV7\("ota_lib" "ota_tb" "maestro" "([^"]+)" "all" "" "none" "" "none" ""/,
 			);
 			expect(bundleMatch).not.toBeNull();
 			const bundleDirectory = bundleMatch?.[1] ?? "";
@@ -111,6 +191,12 @@ describe("simulation bundle export", () => {
 				scope: "all",
 				topOceanPath,
 				virtuosoVersion: "IC25.1",
+				outputsMode: "none",
+				outputDefinitionsPath: null,
+				outputResultsPath: null,
+				outputResultsHistoryName: null,
+				schematicInstancesMode: "none",
+				schematicInstancesPath: null,
 				tests: [
 					{
 						index: 1,
@@ -201,6 +287,307 @@ describe("simulation bundle export", () => {
 				"spectre-netlist",
 			]);
 			expect(commandIndex).toBe(1);
+		}
+	});
+
+	it("exports one aggregate definitions CSV and one aggregate Detail results CSV", async () => {
+		const instance = await createFakeManagedInstance("maestro-outputs");
+		const bridge = respondToCommands(instance, async (command) => {
+			const match = command.match(
+				/vaSessionPrepareMaestroExportV7\("ota_lib" "ota_tb" "maestro" "([^"]+)" "top" "" "all" "Interactive.7" "none" ""/,
+			);
+			expect(match).not.toBeNull();
+			const bundleDirectory = match?.[1] ?? "";
+			const topOceanPath = join(bundleDirectory, "maestro", "maestro.ocn");
+			const definitionsPath = join(bundleDirectory, "outputs", "definitions", "all.csv");
+			const resultsPath = join(bundleDirectory, "outputs", "results", ".all.csv");
+			await writeFile(
+				topOceanPath,
+				[
+					'ocnSetXLMode("assembler")',
+					'ocnxlTargetCellView( "ota_lib" "ota_tb" "maestro" ?mode "r" )',
+					'ocnxlBeginTest("ac_test")',
+					"ocnxlRun( ?mode 'sweepsAndCorners ?nominalCornerEnabled t)",
+					"",
+				].join("\n"),
+				"utf8",
+			);
+			await writeFile(
+				definitionsPath,
+				"Test,Name,Type,Output,EvalType,Plot,PlotTarget,Save,Spec\nac_test,gain,Expression,gainExpr,point,N,N,N,\n",
+				"utf8",
+			);
+			await writeFile(resultsPath, "Maestro output view\nTest,Output,Value,Unit\nac_test,gain,80,dB\n", "utf8");
+			return {
+				scope: "top",
+				topOceanPath,
+				virtuosoVersion: "IC25.1",
+				tests: [],
+				outputsMode: "all",
+				outputDefinitionsPath: definitionsPath,
+				outputResultsPath: resultsPath,
+				outputResultsHistoryName: "Interactive.7",
+				schematicInstancesMode: "none",
+				schematicInstancesPath: null,
+			};
+		});
+
+		const result = await exportManagedMaestroBundle({
+			instanceId: "maestro-outputs",
+			registryDir: instance.registryDir,
+			library: "ota_lib",
+			cell: "ota_tb",
+			view: "maestro",
+			scope: "top",
+			outputs: "all",
+			historyName: "Interactive.7",
+			outputDirectory: join(instance.workDir, "bundles"),
+			timeoutMs: 2_000,
+		});
+		await bridge;
+
+		expect(result.ok).toBe(true);
+		if (result.ok) {
+			const manifest = JSON.parse(await readFile(result.value.manifest.path, "utf8"));
+			expect(manifest.outputs).toMatchObject({
+				mode: "all",
+				definitions: { path: "outputs/definitions/all.csv", format: "csv" },
+				results: {
+					historyName: "Interactive.7",
+					view: "Detail",
+					artifact: { path: "outputs/results/Interactive.7/all.csv", format: "csv" },
+				},
+			});
+			expect(result.value.artifacts.map((artifact) => [artifact.kind, artifact.format])).toEqual([
+				["ocean-maestro", "text"],
+				["output-definitions", "csv"],
+				["output-results", "csv"],
+			]);
+			expect(await readdir(join(result.value.bundleDirectory, "outputs", "definitions"))).toEqual(["all.csv"]);
+			expect(await readdir(join(result.value.bundleDirectory, "outputs", "results", "Interactive.7"))).toEqual([
+				"all.csv",
+			]);
+		}
+	});
+
+	it("exports only one test's output rows without OCEAN or netlist artifacts", async () => {
+		const instance = await createFakeManagedInstance("maestro-output-test");
+		const bridge = respondToCommands(instance, async (command) => {
+			const match = command.match(
+				/vaSessionPrepareMaestroExportV7\("ota_lib" "ota_tb" "maestro" "([^"]+)" "none" "" "all" "Interactive.7" "none" "stb_test"/,
+			);
+			expect(match).not.toBeNull();
+			const bundleDirectory = match?.[1] ?? "";
+			const definitionsPath = join(bundleDirectory, "outputs", "definitions", "all.csv");
+			const resultsPath = join(bundleDirectory, "outputs", "results", ".all.csv");
+			await writeFile(
+				definitionsPath,
+				[
+					"Test,Name,Type,Output,EvalType,Plot,PlotTarget,Save,Spec",
+					"ac_test,gain,expr,gainExpr,point,t,,,",
+					"stb_test,phase_margin,expr,pmExpr,point,t,,,> 60",
+					"",
+				].join("\n"),
+				"utf8",
+			);
+			await writeFile(
+				resultsPath,
+				[
+					",Parameter,Nominal,,,",
+					"",
+					"Test,Output,Nominal,Spec,Weight,Pass/Fail",
+					"ac_test,gain,80,dB,,pass",
+					"stb_test,phase_margin,65,> 60,,pass",
+					"",
+				].join("\n"),
+				"utf8",
+			);
+			return {
+				scope: "none",
+				topOceanPath: null,
+				virtuosoVersion: "IC25.1",
+				tests: [],
+				outputsMode: "all",
+				outputDefinitionsPath: definitionsPath,
+				outputResultsPath: resultsPath,
+				outputResultsHistoryName: "Interactive.7",
+				schematicInstancesMode: "none",
+				schematicInstancesPath: null,
+			};
+		});
+
+		const result = await exportManagedMaestroBundle({
+			instanceId: "maestro-output-test",
+			registryDir: instance.registryDir,
+			library: "ota_lib",
+			cell: "ota_tb",
+			view: "maestro",
+			scope: "none",
+			outputs: "all",
+			outputTestName: "stb_test",
+			historyName: "Interactive.7",
+			outputDirectory: join(instance.workDir, "bundles"),
+			timeoutMs: 2_000,
+		});
+		await bridge;
+
+		expect(result.ok).toBe(true);
+		if (result.ok) {
+			const definitions = await readFile(
+				join(result.value.bundleDirectory, "outputs", "definitions", "all.csv"),
+				"utf8",
+			);
+			const results = await readFile(
+				join(result.value.bundleDirectory, "outputs", "results", "Interactive.7", "all.csv"),
+				"utf8",
+			);
+			expect(definitions).toContain("stb_test,phase_margin");
+			expect(definitions).not.toContain("ac_test,gain");
+			expect(results).toContain("stb_test,phase_margin");
+			expect(results).not.toContain("ac_test,gain");
+			expect(await readdir(result.value.bundleDirectory)).toEqual(["bundle.json", "outputs"]);
+			const manifest = JSON.parse(await readFile(result.value.manifest.path, "utf8"));
+			expect(manifest).toMatchObject({
+				scope: "none",
+				outputs: { mode: "all", testName: "stb_test" },
+				tests: [],
+			});
+		}
+	});
+
+	it("exports one deduplicated top-level schematic placement artifact without subcircuit contents", async () => {
+		const instance = await createFakeManagedInstance("maestro-schematic-instances");
+		const bridge = respondToCommands(instance, async (command) => {
+			const match = command.match(
+				/vaSessionPrepareMaestroExportV7\("ota_lib" "ota_tb" "maestro" "([^"]+)" "top" "" "none" "" "top-level" ""/,
+			);
+			expect(match).not.toBeNull();
+			const bundleDirectory = match?.[1] ?? "";
+			const topOceanPath = join(bundleDirectory, "maestro", "maestro.ocn");
+			const schematicInstancesPath = join(bundleDirectory, "schematics", "all.json");
+			await writeFile(
+				topOceanPath,
+				[
+					'ocnSetXLMode("assembler")',
+					'ocnxlTargetCellView( "ota_lib" "ota_tb" "maestro" ?mode "r" )',
+					'ocnxlBeginTest("ac_test")',
+					"ocnxlRun( ?mode 'sweepsAndCorners ?nominalCornerEnabled t)",
+					"",
+				].join("\n"),
+				"utf8",
+			);
+			const directInstances = [
+				{
+					name: "C0",
+					master: { library: "analogLib", cell: "cap", view: "symbol" },
+					transform: {
+						origin: { x: 3.3125, y: 0.1875 },
+						orientation: "R0",
+						magnification: 1,
+					},
+					boundingBox: {
+						lowerLeft: { x: 2.65, y: -0.2125 },
+						upperRight: { x: 3.8, y: 0.2125 },
+						width: 1.15,
+						height: 0.425,
+					},
+				},
+				{
+					name: "I2",
+					master: { library: "test", cell: "two_stage_amp", view: "symbol" },
+					transform: {
+						origin: { x: 0.625, y: 0.1875 },
+						orientation: "R0",
+						magnification: 1,
+					},
+					boundingBox: {
+						lowerLeft: { x: 0.6, y: -0.3375 },
+						upperRight: { x: 2.91875, y: 0.65 },
+						width: 2.31875,
+						height: 0.9875,
+					},
+				},
+			];
+			const schematic = (testName: string) => ({
+				design: { library: "test_tb", cell: "two_stage_amp_tb", view: "schematic" },
+				tests: [testName],
+				boundingBox: {
+					lowerLeft: { x: -1.85, y: -1.1125 },
+					upperRight: { x: 3.8, y: 0.875 },
+					width: 5.65,
+					height: 1.9875,
+				},
+				directInstanceCount: directInstances.length,
+				instances: directInstances,
+			});
+			await writeFile(
+				schematicInstancesPath,
+				`${JSON.stringify({
+					schemaVersion: 1,
+					hierarchyPolicy: "top-level-only",
+					recursive: false,
+					schematics: [schematic("ac_test"), schematic("stb_test")],
+				})}\n`,
+				"utf8",
+			);
+			return {
+				scope: "top",
+				topOceanPath,
+				virtuosoVersion: "IC25.1",
+				tests: [],
+				outputsMode: "none",
+				outputDefinitionsPath: null,
+				outputResultsPath: null,
+				outputResultsHistoryName: null,
+				schematicInstancesMode: "top-level",
+				schematicInstancesPath,
+			};
+		});
+
+		const result = await exportManagedMaestroBundle({
+			instanceId: "maestro-schematic-instances",
+			registryDir: instance.registryDir,
+			library: "ota_lib",
+			cell: "ota_tb",
+			view: "maestro",
+			scope: "top",
+			schematicInstances: "top-level",
+			outputDirectory: join(instance.workDir, "bundles"),
+			timeoutMs: 2_000,
+		});
+		await bridge;
+
+		expect(result.ok).toBe(true);
+		if (result.ok) {
+			const placementPath = join(result.value.bundleDirectory, "schematics", "all.json");
+			const placement = JSON.parse(await readFile(placementPath, "utf8"));
+			expect(placement).toMatchObject({
+				hierarchyPolicy: "top-level-only",
+				recursive: false,
+				schematics: [
+					{
+						tests: ["ac_test", "stb_test"],
+						directInstanceCount: 2,
+						instances: [{ name: "C0" }, { name: "I2", master: { library: "test", cell: "two_stage_amp" } }],
+					},
+				],
+			});
+			expect(placement.schematics).toHaveLength(1);
+			expect(JSON.stringify(placement)).not.toContain("M0");
+			const manifest = JSON.parse(await readFile(result.value.manifest.path, "utf8"));
+			expect(manifest.schematicInstances).toMatchObject({
+				mode: "top-level",
+				hierarchyPolicy: "top-level-only",
+				recursive: false,
+				schematics: 1,
+				directInstances: 2,
+				artifact: { path: "schematics/all.json", format: "json" },
+			});
+			expect(result.value.artifacts.at(-1)).toMatchObject({
+				kind: "schematic-instances",
+				format: "json",
+				path: placementPath,
+			});
 		}
 	});
 
@@ -306,11 +693,26 @@ describe("simulation bundle export", () => {
 			error: { type: "maestro_test_name_required" },
 		});
 	});
+
+	it("rejects historyName unless output results are selected", async () => {
+		const result = await exportManagedMaestroBundle({
+			library: "ota_lib",
+			cell: "ota_tb",
+			view: "maestro",
+			outputs: "definitions",
+			historyName: "Interactive.7",
+		});
+
+		expect(result).toMatchObject({
+			ok: false,
+			error: { type: "maestro_output_history_not_applicable" },
+		});
+	});
 });
 
 async function prepareSelectiveMaestroExport(instance: FakeManagedInstance, command: string): Promise<unknown> {
 	const match = command.match(
-		/vaSessionPrepareMaestroExportV4\("ota_lib" "ota_tb" "maestro" "([^"]+)" "(all|top|tests|test)" "([^"]*)"/,
+		/vaSessionPrepareMaestroExportV7\("ota_lib" "ota_tb" "maestro" "([^"]+)" "(all|top|tests|test)" "([^"]*)" "none" "" "none" ""/,
 	);
 	expect(match).not.toBeNull();
 	const bundleDirectory = match?.[1] ?? "";
@@ -367,7 +769,18 @@ async function prepareSelectiveMaestroExport(instance: FakeManagedInstance, comm
 			design: { library: test.library, cell: test.cell, view: "schematic" },
 		});
 	}
-	return { scope, topOceanPath, virtuosoVersion: "IC25.1", tests };
+	return {
+		scope,
+		topOceanPath,
+		virtuosoVersion: "IC25.1",
+		tests,
+		outputsMode: "none",
+		outputDefinitionsPath: null,
+		outputResultsPath: null,
+		outputResultsHistoryName: null,
+		schematicInstancesMode: "none",
+		schematicInstancesPath: null,
+	};
 }
 
 async function createFakeManagedInstance(instanceId: string): Promise<FakeManagedInstance> {

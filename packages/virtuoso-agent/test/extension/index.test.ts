@@ -92,6 +92,10 @@ describe("virtuoso-agent pi extension", () => {
 		expect(exportSchema).toContain('"const":"top"');
 		expect(exportSchema).toContain('"const":"tests"');
 		expect(exportSchema).toContain('"const":"test"');
+		expect(exportSchema).toContain('"const":"definitions"');
+		expect(exportSchema).toContain('"const":"results"');
+		expect(exportSchema).toContain('"const":"top-level"');
+		expect(exportSchema).toContain('"const":"spectre"');
 	});
 
 	it("automatically binds the instance used by a successful business operation", async () => {
@@ -154,13 +158,24 @@ describe("virtuoso-agent pi extension", () => {
 				view: "maestro",
 				scope: "test",
 				testName: "stb_test",
+				outputs: "all",
+				historyName: "Interactive.7",
+				schematicInstances: "top-level",
+				outputTestName: "stb_test",
 			})) as { content: Array<{ text: string }> };
 
 		expect(output.content[0].text).toBe(
 			"Maestro simulation bundle exported without running simulation: /tmp/maestro-bundle. Manifest: /tmp/maestro-bundle/bundle.json",
 		);
 		expect(runtimeMocks.exportManagedMaestroBundle).toHaveBeenCalledWith(
-			expect.objectContaining({ scope: "test", testName: "stb_test" }),
+			expect.objectContaining({
+				scope: "test",
+				testName: "stb_test",
+				outputs: "all",
+				historyName: "Interactive.7",
+				schematicInstances: "top-level",
+				outputTestName: "stb_test",
+			}),
 		);
 	});
 
@@ -188,10 +203,15 @@ describe("virtuoso-agent pi extension", () => {
 				library: "ota_lib",
 				cell: "ota_core",
 				view: "schematic",
+				netlist: "none",
+				schematicInstances: "top-level",
 			})) as { content: Array<{ text: string }> };
 
 		expect(output.content[0].text).toBe(
 			"Schematic simulation bundle exported without running simulation: /tmp/schematic-bundle. Manifest: /tmp/schematic-bundle/bundle.json",
+		);
+		expect(runtimeMocks.exportManagedSchematicBundle).toHaveBeenCalledWith(
+			expect.objectContaining({ netlist: "none", schematicInstances: "top-level" }),
 		);
 	});
 });

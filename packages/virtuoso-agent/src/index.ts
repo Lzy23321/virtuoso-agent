@@ -79,6 +79,9 @@ export {
 export type {
 	ExportSimulationBundleRequest,
 	MaestroExportScope,
+	MaestroOutputExportMode,
+	MaestroSchematicInstancesMode,
+	SchematicNetlistMode,
 	SimulationBundleKind,
 	SimulationBundleResult,
 } from "./runtime/workflows/simulation-bundle.ts";

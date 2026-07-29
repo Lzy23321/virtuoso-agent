@@ -16,7 +16,10 @@ import {
 	listManagedVirtuosoLibraries,
 	listManagedVirtuosoLibraryCellViews,
 	type MaestroExportScope,
+	type MaestroOutputExportMode,
+	type MaestroSchematicInstancesMode,
 	type ManagedVirtuosoRequest,
+	type SchematicNetlistMode,
 	showManagedVirtuosoCellView,
 	showVirtuosoCellViewInSession,
 	startVirtuosoUiSession,
@@ -261,6 +264,11 @@ interface ParsedBundleExportCommand {
 		outputDirectory?: string;
 		scope?: MaestroExportScope;
 		testName?: string;
+		outputs?: MaestroOutputExportMode;
+		historyName?: string;
+		schematicInstances?: MaestroSchematicInstancesMode;
+		outputTestName?: string;
+		netlist?: SchematicNetlistMode;
 	};
 }
 
@@ -388,16 +396,65 @@ function parseMaestroExportCommand(argv: string[]): ParsedBundleExportCommand | 
 		return parsed;
 	}
 	const rawScope = getOptionValue(argv, "--scope");
-	if (rawScope && rawScope !== "all" && rawScope !== "top" && rawScope !== "tests" && rawScope !== "test") {
-		return { ok: false, error: "--scope must be all, top, tests, or test." };
+	if (
+		rawScope &&
+		rawScope !== "none" &&
+		rawScope !== "all" &&
+		rawScope !== "top" &&
+		rawScope !== "tests" &&
+		rawScope !== "test"
+	) {
+		return { ok: false, error: "--scope must be none, all, top, tests, or test." };
 	}
 	const scope = rawScope as MaestroExportScope | undefined;
 	const testName = getOptionValue(argv, "--test");
 	if (scope === "test" && !testName) {
 		return { ok: false, error: "maestro export with --scope test requires --test." };
 	}
-	if (testName && scope !== "test") {
-		return { ok: false, error: "--test requires --scope test." };
+	if (testName && scope !== "test" && scope !== "none") {
+		return { ok: false, error: "--test requires --scope test or --scope none." };
+	}
+	const rawOutputs = getOptionValue(argv, "--outputs");
+	if (argv.includes("--outputs") && !rawOutputs) {
+		return { ok: false, error: "--outputs requires a value." };
+	}
+	if (
+		rawOutputs &&
+		rawOutputs !== "none" &&
+		rawOutputs !== "definitions" &&
+		rawOutputs !== "results" &&
+		rawOutputs !== "all"
+	) {
+		return { ok: false, error: "--outputs must be none, definitions, results, or all." };
+	}
+	const outputs = rawOutputs as MaestroOutputExportMode | undefined;
+	const historyName = getOptionValue(argv, "--history");
+	if (argv.includes("--history") && !historyName) {
+		return { ok: false, error: "--history requires a value." };
+	}
+	if (historyName && outputs !== "results" && outputs !== "all") {
+		return { ok: false, error: "--history requires --outputs results or --outputs all." };
+	}
+	const rawSchematicInstances = getOptionValue(argv, "--schematic-instances");
+	if (argv.includes("--schematic-instances") && !rawSchematicInstances) {
+		return { ok: false, error: "--schematic-instances requires a value." };
+	}
+	if (rawSchematicInstances && rawSchematicInstances !== "none" && rawSchematicInstances !== "top-level") {
+		return { ok: false, error: "--schematic-instances must be none or top-level." };
+	}
+	const schematicInstances = rawSchematicInstances as MaestroSchematicInstancesMode | undefined;
+	if (scope === "none" && testName && schematicInstances !== "top-level") {
+		return { ok: false, error: "--test with --scope none requires --schematic-instances top-level." };
+	}
+	const outputTestName = getOptionValue(argv, "--output-test");
+	if (argv.includes("--output-test") && !outputTestName) {
+		return { ok: false, error: "--output-test requires a value." };
+	}
+	if (outputTestName && (!outputs || outputs === "none")) {
+		return { ok: false, error: "--output-test requires --outputs definitions, results, or all." };
+	}
+	if (argv.includes("--netlist")) {
+		return { ok: false, error: "--netlist is only supported by schematic export." };
 	}
 	return {
 		ok: true,
@@ -405,6 +462,10 @@ function parseMaestroExportCommand(argv: string[]): ParsedBundleExportCommand | 
 			...parsed.request,
 			scope,
 			testName,
+			outputs,
+			historyName,
+			schematicInstances,
+			outputTestName,
 		},
 	};
 }
@@ -414,10 +475,44 @@ function parseSchematicExportCommand(argv: string[]): ParsedBundleExportCommand 
 	if (command !== "schematic" || action !== "export") {
 		return { ok: false };
 	}
-	if (argv.includes("--scope") || argv.includes("--test")) {
-		return { ok: false, error: "--scope and --test are only supported by maestro export." };
+	if (
+		argv.includes("--scope") ||
+		argv.includes("--test") ||
+		argv.includes("--outputs") ||
+		argv.includes("--history") ||
+		argv.includes("--output-test")
+	) {
+		return {
+			ok: false,
+			error: "--scope, --test, --outputs, --history, and --output-test are only supported by maestro export.",
+		};
 	}
-	return parseBundleExportCommand(argv, "schematic export");
+	const parsed = parseBundleExportCommand(argv, "schematic export");
+	if (!parsed.ok) {
+		return parsed;
+	}
+	const rawNetlist = getOptionValue(argv, "--netlist");
+	if (argv.includes("--netlist") && !rawNetlist) {
+		return { ok: false, error: "--netlist requires a value." };
+	}
+	if (rawNetlist && rawNetlist !== "none" && rawNetlist !== "spectre") {
+		return { ok: false, error: "--netlist must be none or spectre." };
+	}
+	const rawSchematicInstances = getOptionValue(argv, "--schematic-instances");
+	if (argv.includes("--schematic-instances") && !rawSchematicInstances) {
+		return { ok: false, error: "--schematic-instances requires a value." };
+	}
+	if (rawSchematicInstances && rawSchematicInstances !== "none" && rawSchematicInstances !== "top-level") {
+		return { ok: false, error: "--schematic-instances must be none or top-level." };
+	}
+	return {
+		ok: true,
+		request: {
+			...parsed.request,
+			netlist: rawNetlist as SchematicNetlistMode | undefined,
+			schematicInstances: rawSchematicInstances as MaestroSchematicInstancesMode | undefined,
+		},
+	};
 }
 
 function parseBundleExportCommand(argv: string[], label: string): ParsedBundleExportCommand | IgnoredCommand {
@@ -510,7 +605,12 @@ function parseManagedVirtuosoOptions(args: string[]): { ok: true; value: Managed
 			arg === "--mode" ||
 			arg === "--output-dir" ||
 			arg === "--scope" ||
-			arg === "--test"
+			arg === "--test" ||
+			arg === "--outputs" ||
+			arg === "--history" ||
+			arg === "--schematic-instances" ||
+			arg === "--output-test" ||
+			arg === "--netlist"
 		) {
 			index++;
 			continue;
@@ -705,10 +805,10 @@ function writeUsage(io: CliIo, toStdout = false): void {
 		"  vab inventory cellviews --lib <lib> --json [--instance-id <id>] [--cds-lib <path>] [--registry-dir <dir>] [--timeout-ms <ms>]",
 	);
 	write(
-		"  vab maestro export --lib <lib> --cell <cell> --view <view> --json [--scope all|top|tests|test] [--test <name>] [--output-dir <dir>] [--instance-id <id>] [--cds-lib <path>] [--registry-dir <dir>] [--timeout-ms <ms>]",
+		"  vab maestro export --lib <lib> --cell <cell> --view <view> --json [--scope none|all|top|tests|test] [--test <name>] [--outputs none|definitions|results|all] [--output-test <name>] [--history <name>] [--schematic-instances none|top-level] [--output-dir <dir>] [--instance-id <id>] [--cds-lib <path>] [--registry-dir <dir>] [--timeout-ms <ms>]",
 	);
 	write(
-		"  vab schematic export --lib <lib> --cell <cell> --view <view> --json [--output-dir <dir>] [--instance-id <id>] [--cds-lib <path>] [--registry-dir <dir>] [--timeout-ms <ms>]",
+		"  vab schematic export --lib <lib> --cell <cell> --view <view> --json [--netlist none|spectre] [--schematic-instances none|top-level] [--output-dir <dir>] [--instance-id <id>] [--cds-lib <path>] [--registry-dir <dir>] [--timeout-ms <ms>]",
 	);
 	write(
 		"  vab cellview open --lib <lib> --cell <cell> --view <view> --json [--instance-id <id>] [--cds-lib <path>] [--registry-dir <dir>] [--mode r|a|w] [--timeout-ms <ms>]",

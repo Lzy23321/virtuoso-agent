@@ -88,21 +88,188 @@ procedure(vaSimulationExportWriteTestSweepOceanScript(path library cell view ses
 	)
 )
 
-procedure(vaSimulationExportPrepareMaestro(library cell view bundleDir scope requestedTestName)
+procedure(vaSimulationExportWriteBoundingBoxJson(filePointer boundingBox)
+	unless(boundingBox
+		error("Could not resolve a schematic bounding box.\n")
+	)
+	fprintf(
+		filePointer
+		"{\"lowerLeft\":{\"x\":%L,\"y\":%L},\"upperRight\":{\"x\":%L,\"y\":%L},\"width\":%L,\"height\":%L}"
+		caar(boundingBox)
+		cadar(boundingBox)
+		caadr(boundingBox)
+		cadadr(boundingBox)
+		caadr(boundingBox) - caar(boundingBox)
+		cadadr(boundingBox) - cadar(boundingBox)
+	)
+)
+
+procedure(vaSimulationExportWriteSchematicInstances(
+	filePointer testName designLibrary designCell designView
+)
+	let((cellView instances instanceSeparator boundingBox origin testsJson)
+		cellView = dbOpenCellViewByType(
+			designLibrary designCell designView "schematic" "r"
+		)
+		unless(cellView
+			error(
+				"Could not open top-level schematic %s/%s/%s for test %s.\n"
+				designLibrary designCell designView testName
+			)
+		)
+		unwindProtect(
+			progn(
+				instances = cellView~>instances
+				testsJson = if(testName == "" then "" else vaJsonString(testName))
+				fprintf(
+					filePointer
+					"{\"design\":{\"library\":%s,\"cell\":%s,\"view\":%s},\"tests\":[%s],\"boundingBox\":"
+					vaJsonString(designLibrary)
+					vaJsonString(designCell)
+					vaJsonString(designView)
+					testsJson
+				)
+				vaSimulationExportWriteBoundingBoxJson(filePointer cellView~>bBox)
+				fprintf(
+					filePointer
+					",\"directInstanceCount\":%d,\"instances\":["
+					length(instances)
+				)
+				instanceSeparator = ""
+				foreach(instance instances
+					boundingBox = instance~>bBox
+					origin = instance~>xy
+					unless(origin
+						error("Could not resolve origin for top-level instance %s.\n" instance~>name)
+					)
+					fprintf(
+						filePointer
+						"%s{\"name\":%s,\"master\":{\"library\":%s,\"cell\":%s,\"view\":%s},\"transform\":{\"origin\":{\"x\":%L,\"y\":%L},\"orientation\":%s,\"magnification\":%L},\"boundingBox\":"
+						instanceSeparator
+						vaJsonString(instance~>name)
+						vaJsonString(instance~>libName)
+						vaJsonString(instance~>cellName)
+						vaJsonString(instance~>viewName)
+						car(origin)
+						cadr(origin)
+						vaJsonString(instance~>orient)
+						instance~>mag
+					)
+					vaSimulationExportWriteBoundingBoxJson(filePointer boundingBox)
+					fprintf(filePointer "}")
+					instanceSeparator = ","
+				)
+				fprintf(filePointer "]}")
+			)
+			dbClose(cellView)
+		)
+		t
+	)
+)
+
+procedure(vaSimulationExportSchematicInstancesToFile(
+	library cell view schematicInstancesPath
+)
+	let((filePointer)
+		filePointer = outfile(schematicInstancesPath "w")
+		unless(filePointer
+			error("Could not open schematic instances artifact %s.\n" schematicInstancesPath)
+		)
+		unwindProtect(
+			progn(
+				fprintf(
+					filePointer
+					"{\"schemaVersion\":1,\"hierarchyPolicy\":\"top-level-only\",\"recursive\":false,\"schematics\":["
+				)
+				vaSimulationExportWriteSchematicInstances(
+					filePointer "" library cell view
+				)
+				fprintf(filePointer "]}\n")
+			)
+			close(filePointer)
+		)
+		t
+	)
+)
+
+procedure(vaSessionExportSchematicInstances(
+	library cell view schematicInstancesPath resultPath
+)
+	let((captured data)
+		captured = errset(
+			vaSimulationExportSchematicInstancesToFile(
+				library cell view schematicInstancesPath
+			)
+			t
+		)
+		if(captured && car(captured) then
+			data = sprintf(
+				nil
+				"{\"path\":%s,\"virtuosoVersion\":%s}"
+				vaJsonString(schematicInstancesPath)
+				vaJsonString(getVersion(t))
+			)
+			vaSessionWriteResult(resultPath vaOkEnvelope(data))
+		else
+			vaSimulationExportEmitError(
+				"SCHEMATIC_INSTANCES_EXPORT_FAILED"
+				sprintf(
+					nil
+					"Could not export top-level schematic instances for %s/%s/%s."
+					library cell view
+				)
+				resultPath
+			)
+		)
+	)
+)
+
+procedure(vaSimulationExportPrepareMaestro(
+	library cell view bundleDir scope requestedTestName outputsMode requestedHistoryName
+	schematicInstancesMode requestedOutputTestName
+)
 	let((
 		existingSessions session closeSession tests enabledTests enabledStateCaptured topOceanPath topResult
-		includeTop includeTests testItems separator index testName exportTest testSession
+		includeTop includeTests includeSchematicInstances testItems separator index testName
+		exportTest exportSchematic testSession
 		testDir singlePath sweepPath enabled topOceanJson
 		designLibrary designCell designView netlistResult netlistDir simInputFile netlistPath
+		includeOutputDefinitions includeOutputResults outputDefinitionsPath outputDefinitionsResult
+		setupDatabase historyData historyNames historyEntry outputResultsHistoryName
+		outputResultsPath outputResultsResult
+		outputDefinitionsJson outputResultsJson outputResultsHistoryJson
+		schematicInstancesPath schematicInstancesFile schematicSeparator schematicInstancesJson
 	)
-		unless(member(scope list("all" "top" "tests" "test"))
+		unless(member(scope list("none" "all" "top" "tests" "test"))
 			error("Unsupported Maestro export scope: %s.\n" scope)
+		)
+		unless(member(outputsMode list("none" "definitions" "results" "all"))
+			error("Unsupported Maestro output export mode: %s.\n" outputsMode)
+		)
+		unless(member(schematicInstancesMode list("none" "top-level"))
+			error("Unsupported Maestro schematic instances mode: %s.\n" schematicInstancesMode)
 		)
 		when(scope == "test" && requestedTestName == ""
 			error("A test name is required for Maestro export scope test.\n")
 		)
+		when(
+			scope == "none" && requestedTestName != "" &&
+			schematicInstancesMode != "top-level"
+			error(
+				"A test name with Maestro export scope none requires top-level schematic instances.\n"
+			)
+		)
+		when(requestedHistoryName != "" && not(member(outputsMode list("results" "all")))
+			error("A history name is only valid when exporting output results.\n")
+		)
+		when(requestedOutputTestName != "" && outputsMode == "none"
+			error("An output test name requires Maestro output export.\n")
+		)
 		includeTop = member(scope list("all" "top"))
 		includeTests = member(scope list("all" "tests" "test"))
+		includeOutputDefinitions = member(outputsMode list("definitions" "all"))
+		includeOutputResults = member(outputsMode list("results" "all"))
+		includeSchematicInstances = schematicInstancesMode == "top-level"
 		existingSessions = maeGetSessions()
 		session = maeOpenSetup(
 			library
@@ -126,8 +293,22 @@ procedure(vaSimulationExportPrepareMaestro(library cell view bundleDir scope req
 					enabledTests = maeGetSetup(?typeName "tests" ?enabled t ?session session)
 					enabledStateCaptured = t
 				)
-				when(scope == "test" && not(member(requestedTestName tests))
+				when(
+					(scope == "test" || (scope == "none" && requestedTestName != "")) &&
+					not(member(requestedTestName tests))
 					error("Could not find Maestro test %s.\n" requestedTestName)
+				)
+				when(
+					requestedOutputTestName != "" &&
+					not(member(requestedOutputTestName tests))
+					error("Could not find Maestro output test %s.\n" requestedOutputTestName)
+				)
+				when(includeOutputDefinitions
+					outputDefinitionsPath = strcat(bundleDir "/outputs/definitions/all.csv")
+					outputDefinitionsResult = axlOutputsExportToFile(session outputDefinitionsPath)
+					unless(outputDefinitionsResult
+						error("Could not export Maestro output definitions to %s.\n" outputDefinitionsPath)
+					)
 				)
 				when(includeTop
 					topOceanPath = strcat(bundleDir "/maestro/maestro.ocn")
@@ -136,6 +317,21 @@ procedure(vaSimulationExportPrepareMaestro(library cell view bundleDir scope req
 						error("Could not export top-level Maestro OCEAN script.\n")
 					)
 				)
+				when(includeSchematicInstances
+					schematicInstancesPath = strcat(bundleDir "/schematics/all.json")
+					schematicInstancesFile = outfile(schematicInstancesPath "w")
+					unless(schematicInstancesFile
+						error(
+							"Could not open schematic instances artifact %s.\n"
+							schematicInstancesPath
+						)
+					)
+					fprintf(
+						schematicInstancesFile
+						"{\"schemaVersion\":1,\"hierarchyPolicy\":\"top-level-only\",\"recursive\":false,\"schematics\":["
+					)
+					schematicSeparator = ""
+				)
 
 				testItems = ""
 				separator = ""
@@ -143,13 +339,13 @@ procedure(vaSimulationExportPrepareMaestro(library cell view bundleDir scope req
 				foreach(testName tests
 					index = index + 1
 					exportTest = includeTests && (scope != "test" || testName == requestedTestName)
-					when(exportTest
-						testDir = sprintf(nil "%s/tests/%03d" bundleDir index)
-						unless(isDir(testDir)
-							createDir(testDir)
+					exportSchematic = includeSchematicInstances &&
+						(
+							not(member(scope list("test" "none"))) ||
+							requestedTestName == "" ||
+							testName == requestedTestName
 						)
-						singlePath = strcat(testDir "/single.ocn")
-						sweepPath = strcat(testDir "/sweep.ocn")
+					when(exportTest || exportSchematic
 						testSession = maeGetTestSession(testName ?session session)
 						unless(testSession
 							error("Could not get test session for %s.\n" testName)
@@ -161,7 +357,15 @@ procedure(vaSimulationExportPrepareMaestro(library cell view bundleDir scope req
 						unless(designLibrary && designCell && designView
 							error("Could not resolve the design for test %s.\n" testName)
 						)
+					)
 
+					when(exportTest
+						testDir = sprintf(nil "%s/tests/%03d" bundleDir index)
+						unless(isDir(testDir)
+							createDir(testDir)
+						)
+						singlePath = strcat(testDir "/single.ocn")
+						sweepPath = strcat(testDir "/sweep.ocn")
 						vaSimulationExportWriteSingleOceanScript(singlePath testSession)
 						vaSimulationExportWriteTestSweepOceanScript(
 							sweepPath library cell view session testName enabledTests
@@ -200,20 +404,103 @@ procedure(vaSimulationExportPrepareMaestro(library cell view bundleDir scope req
 						)
 						separator = ","
 					)
+					when(exportSchematic
+						fprintf(schematicInstancesFile "%s" schematicSeparator)
+						vaSimulationExportWriteSchematicInstances(
+							schematicInstancesFile testName designLibrary designCell designView
+						)
+						schematicSeparator = ","
+					)
+				)
+				when(includeSchematicInstances
+					fprintf(schematicInstancesFile "]}\n")
+					close(schematicInstancesFile)
+					schematicInstancesFile = nil
+				)
+				when(includeOutputResults
+					setupDatabase = axlGetMainSetupDB(session)
+					unless(setupDatabase
+						error("Could not get the Maestro setup database.\n")
+					)
+					if(requestedHistoryName != "" then
+						progn(
+							historyEntry = axlGetHistoryEntry(setupDatabase requestedHistoryName)
+							when(not(historyEntry) || historyEntry == 0
+								error("Could not find Maestro history %s.\n" requestedHistoryName)
+							)
+							outputResultsHistoryName = requestedHistoryName
+						)
+					else
+						progn(
+							historyEntry = axlGetCurrentHistory(session)
+							when(historyEntry && historyEntry != 0
+								outputResultsHistoryName = axlGetHistoryName(historyEntry)
+							)
+							when(not(outputResultsHistoryName) || outputResultsHistoryName == ""
+								historyData = axlGetHistory(setupDatabase)
+								historyNames = cadr(historyData)
+								unless(historyNames
+									error("No saved Maestro history is available.\n")
+								)
+								outputResultsHistoryName = nth(length(historyNames) - 1 historyNames)
+								historyEntry = axlGetHistoryEntry(
+									setupDatabase outputResultsHistoryName
+								)
+								when(not(historyEntry) || historyEntry == 0
+									error(
+										"Could not resolve the latest Maestro history %s.\n"
+										outputResultsHistoryName
+									)
+								)
+							)
+						)
+					)
+					outputResultsPath = strcat(bundleDir "/outputs/results/.all.csv")
+					outputResultsResult = maeExportOutputView(
+						?session session
+						?fileName outputResultsPath
+						?view "Detail"
+						?historyName outputResultsHistoryName
+					)
+					unless(outputResultsResult
+						error(
+							"Could not export the Detail output view for Maestro history %s.\n"
+							outputResultsHistoryName
+						)
+					)
 				)
 				topOceanJson = if(topOceanPath then vaJsonString(topOceanPath) else "null")
+				outputDefinitionsJson = if(
+					outputDefinitionsPath then vaJsonString(outputDefinitionsPath) else "null"
+				)
+				outputResultsJson = if(outputResultsPath then vaJsonString(outputResultsPath) else "null")
+				outputResultsHistoryJson = if(
+					outputResultsHistoryName then vaJsonString(outputResultsHistoryName) else "null"
+				)
+				schematicInstancesJson = if(
+					schematicInstancesPath then vaJsonString(schematicInstancesPath) else "null"
+				)
 				sprintf(
 					nil
-					"{\"scope\":%s,\"topOceanPath\":%s,\"virtuosoVersion\":%s,\"tests\":[%s]}"
+					"{\"scope\":%s,\"topOceanPath\":%s,\"virtuosoVersion\":%s,\"tests\":[%s],\"outputsMode\":%s,\"outputDefinitionsPath\":%s,\"outputResultsPath\":%s,\"outputResultsHistoryName\":%s,\"schematicInstancesMode\":%s,\"schematicInstancesPath\":%s}"
 					vaJsonString(scope)
 					topOceanJson
 					vaJsonString(getVersion(t))
 					testItems
+					vaJsonString(outputsMode)
+					outputDefinitionsJson
+					outputResultsJson
+					outputResultsHistoryJson
+					vaJsonString(schematicInstancesMode)
+					schematicInstancesJson
 				)
 			)
 			progn(
 				when(enabledStateCaptured
 					vaSimulationExportRestoreEnabledTests(session enabledTests)
+				)
+				when(schematicInstancesFile
+					close(schematicInstancesFile)
 				)
 				when(closeSession
 					maeCloseSession(?session session ?simulation "continue")
@@ -226,7 +513,79 @@ procedure(vaSimulationExportPrepareMaestro(library cell view bundleDir scope req
 procedure(vaSessionPrepareMaestroExportV4(library cell view bundleDir scope requestedTestName resultPath)
 	let((captured)
 		captured = errset(
-			vaSimulationExportPrepareMaestro(library cell view bundleDir scope requestedTestName)
+			vaSimulationExportPrepareMaestro(
+				library cell view bundleDir scope requestedTestName "none" "" "none" ""
+			)
+			t
+		)
+		if(captured && car(captured) then
+			vaSessionWriteResult(resultPath vaOkEnvelope(car(captured)))
+		else
+			vaSimulationExportEmitError(
+				"MAESTRO_EXPORT_PREPARE_FAILED"
+				sprintf(nil "Could not export Maestro setup %s/%s/%s." library cell view)
+				resultPath
+			)
+		)
+	)
+)
+
+procedure(vaSessionPrepareMaestroExportV5(
+	library cell view bundleDir scope requestedTestName outputsMode requestedHistoryName resultPath
+)
+	let((captured)
+		captured = errset(
+			vaSimulationExportPrepareMaestro(
+				library cell view bundleDir scope requestedTestName outputsMode requestedHistoryName "none" ""
+			)
+			t
+		)
+		if(captured && car(captured) then
+			vaSessionWriteResult(resultPath vaOkEnvelope(car(captured)))
+		else
+			vaSimulationExportEmitError(
+				"MAESTRO_EXPORT_PREPARE_FAILED"
+				sprintf(nil "Could not export Maestro setup %s/%s/%s." library cell view)
+				resultPath
+			)
+		)
+	)
+)
+
+procedure(vaSessionPrepareMaestroExportV6(
+	library cell view bundleDir scope requestedTestName outputsMode requestedHistoryName
+	schematicInstancesMode resultPath
+)
+	let((captured)
+		captured = errset(
+			vaSimulationExportPrepareMaestro(
+				library cell view bundleDir scope requestedTestName outputsMode requestedHistoryName
+				schematicInstancesMode ""
+			)
+			t
+		)
+		if(captured && car(captured) then
+			vaSessionWriteResult(resultPath vaOkEnvelope(car(captured)))
+		else
+			vaSimulationExportEmitError(
+				"MAESTRO_EXPORT_PREPARE_FAILED"
+				sprintf(nil "Could not export Maestro setup %s/%s/%s." library cell view)
+				resultPath
+			)
+		)
+	)
+)
+
+procedure(vaSessionPrepareMaestroExportV7(
+	library cell view bundleDir scope requestedTestName outputsMode requestedHistoryName
+	schematicInstancesMode requestedOutputTestName resultPath
+)
+	let((captured)
+		captured = errset(
+			vaSimulationExportPrepareMaestro(
+				library cell view bundleDir scope requestedTestName outputsMode requestedHistoryName
+				schematicInstancesMode requestedOutputTestName
+			)
 			t
 		)
 		if(captured && car(captured) then

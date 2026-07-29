@@ -248,7 +248,7 @@ export default function (pi: ExtensionAPI) {
 		name: "virtuoso_export",
 		label: "Export Virtuoso Simulation Bundle",
 		description:
-			"Export Cadence-native Spectre and OCEAN artifacts from one schematic or Maestro setup through a live managed Virtuoso instance. Maestro scope can select all artifacts, only the top-level script, all tests, or one named test. Does not run simulation.",
+			"Export Cadence-native Spectre, OCEAN, optional Maestro outputs, and optional top-level schematic instance placement through a live managed Virtuoso instance. Placement export never descends into subcircuits. Does not run simulation.",
 		parameters: Type.Object({
 			action: Type.Union([Type.Literal("schematic"), Type.Literal("maestro")]),
 			library: Type.String(),
@@ -256,17 +256,91 @@ export default function (pi: ExtensionAPI) {
 			view: Type.String(),
 			outputDirectory: Type.Optional(Type.String({ description: "Optional parent directory for the new bundle." })),
 			scope: Type.Optional(
-				Type.Union([Type.Literal("all"), Type.Literal("top"), Type.Literal("tests"), Type.Literal("test")], {
+				Type.Union(
+					[
+						Type.Literal("none"),
+						Type.Literal("all"),
+						Type.Literal("top"),
+						Type.Literal("tests"),
+						Type.Literal("test"),
+					],
+					{
+						description:
+							"Maestro OCEAN/netlist selection. none suppresses these artifacts; all is the default; top exports maestro.ocn; tests exports every test; test exports one testName.",
+					},
+				),
+			),
+			testName: Type.Optional(
+				Type.String({
 					description:
-						"Maestro export selection. all is the default; top exports only maestro.ocn; tests exports every test; test exports one testName.",
+						"Exact Maestro test name. Required for scope test; with scope none it can select one schematic placement without exporting test OCEAN/netlist artifacts.",
 				}),
 			),
-			testName: Type.Optional(Type.String({ description: "Exact Maestro test name. Required when scope is test." })),
+			outputs: Type.Optional(
+				Type.Union(
+					[Type.Literal("none"), Type.Literal("definitions"), Type.Literal("results"), Type.Literal("all")],
+					{
+						description:
+							"Optional Maestro output export. definitions writes outputs/definitions/all.csv; results writes one completed history to outputs/results/<history>/all.csv; all writes both. Defaults to none.",
+					},
+				),
+			),
+			historyName: Type.Optional(
+				Type.String({
+					description:
+						"Optional Maestro history for output results. When omitted, the current history is used, falling back to the latest saved history.",
+				}),
+			),
+			outputTestName: Type.Optional(
+				Type.String({
+					description:
+						"Optional exact Maestro test name used to filter definitions and/or results. The final aggregate all.csv keeps only this test.",
+				}),
+			),
+			schematicInstances: Type.Optional(
+				Type.Union([Type.Literal("none"), Type.Literal("top-level")], {
+					description:
+						"Optional top-level schematic placement export for either action. Maestro writes deduplicated schematics/all.json; schematic writes schematic/instances.json. Only direct instances, origins, orientations, and bounding boxes are included. Subcircuit contents are never traversed. Defaults to none.",
+				}),
+			),
+			netlist: Type.Optional(
+				Type.Union([Type.Literal("none"), Type.Literal("spectre")], {
+					description:
+						"Schematic-action netlist selection. spectre is the default; none permits placement-only export.",
+				}),
+			),
 			...managedInstanceParameters,
 		}),
 		async execute(_toolCallId, params) {
-			if (params.action === "schematic" && (params.scope || params.testName)) {
-				return invalidToolInput("scope and testName are only supported when virtuoso_export action is maestro");
+			if (
+				params.action === "schematic" &&
+				(params.scope || params.testName || params.outputs || params.historyName || params.outputTestName)
+			) {
+				return invalidToolInput(
+					"scope, testName, outputs, historyName, and outputTestName are only supported when virtuoso_export action is maestro",
+				);
+			}
+			if (params.action === "maestro" && params.netlist) {
+				return invalidToolInput("netlist is only supported when virtuoso_export action is schematic");
+			}
+			if (
+				params.action === "maestro" &&
+				params.historyName &&
+				params.outputs !== "results" &&
+				params.outputs !== "all"
+			) {
+				return invalidToolInput("historyName requires outputs to be results or all");
+			}
+			if (params.action === "maestro" && params.outputTestName && (!params.outputs || params.outputs === "none")) {
+				return invalidToolInput("outputTestName requires outputs to be definitions, results, or all");
+			}
+			if (
+				params.action === "maestro" &&
+				params.scope === "none" &&
+				params.testName &&
+				params.schematicInstances !== "top-level"
+			) {
+				return invalidToolInput("testName with scope none requires schematicInstances to be top-level");
 			}
 			const request = {
 				...params,

@@ -387,7 +387,131 @@ describe("CLI runner", () => {
 		);
 
 		expect(exitCode).toBe(1);
-		expect(io.stderrLines[0]).toBe("Error: --scope must be all, top, tests, or test.");
+		expect(io.stderrLines[0]).toBe("Error: --scope must be none, all, top, tests, or test.");
+	});
+
+	it("rejects an unsupported Maestro output export mode", async () => {
+		const io = createCapturedIo();
+
+		const exitCode = await runCli(
+			[
+				"maestro",
+				"export",
+				"--lib",
+				"ota_lib",
+				"--cell",
+				"ota_tb",
+				"--view",
+				"maestro",
+				"--outputs",
+				"per-test",
+				"--json",
+			],
+			io,
+		);
+
+		expect(exitCode).toBe(1);
+		expect(io.stderrLines[0]).toBe("Error: --outputs must be none, definitions, results, or all.");
+	});
+
+	it("requires result output export when a Maestro history is selected", async () => {
+		const io = createCapturedIo();
+
+		const exitCode = await runCli(
+			[
+				"maestro",
+				"export",
+				"--lib",
+				"ota_lib",
+				"--cell",
+				"ota_tb",
+				"--view",
+				"maestro",
+				"--outputs",
+				"definitions",
+				"--history",
+				"Interactive.7",
+				"--json",
+			],
+			io,
+		);
+
+		expect(exitCode).toBe(1);
+		expect(io.stderrLines[0]).toBe("Error: --history requires --outputs results or --outputs all.");
+	});
+
+	it("rejects an unsupported Maestro schematic instances mode", async () => {
+		const io = createCapturedIo();
+
+		const exitCode = await runCli(
+			[
+				"maestro",
+				"export",
+				"--lib",
+				"ota_lib",
+				"--cell",
+				"ota_tb",
+				"--view",
+				"maestro",
+				"--schematic-instances",
+				"recursive",
+				"--json",
+			],
+			io,
+		);
+
+		expect(exitCode).toBe(1);
+		expect(io.stderrLines[0]).toBe("Error: --schematic-instances must be none or top-level.");
+	});
+
+	it("requires output export when selecting one output test", async () => {
+		const io = createCapturedIo();
+
+		const exitCode = await runCli(
+			[
+				"maestro",
+				"export",
+				"--lib",
+				"ota_lib",
+				"--cell",
+				"ota_tb",
+				"--view",
+				"maestro",
+				"--scope",
+				"none",
+				"--output-test",
+				"stb_test",
+				"--json",
+			],
+			io,
+		);
+
+		expect(exitCode).toBe(1);
+		expect(io.stderrLines[0]).toBe("Error: --output-test requires --outputs definitions, results, or all.");
+	});
+
+	it("rejects an unsupported schematic netlist mode", async () => {
+		const io = createCapturedIo();
+
+		const exitCode = await runCli(
+			[
+				"schematic",
+				"export",
+				"--lib",
+				"ota_lib",
+				"--cell",
+				"ota_tb",
+				"--view",
+				"schematic",
+				"--netlist",
+				"spice",
+				"--json",
+			],
+			io,
+		);
+
+		expect(exitCode).toBe(1);
+		expect(io.stderrLines[0]).toBe("Error: --netlist must be none or spectre.");
 	});
 
 	it("shows a cellView in the existing managed UI", async () => {
