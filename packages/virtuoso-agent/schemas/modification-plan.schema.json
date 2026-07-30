@@ -1,0 +1,254 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://virtuoso-agent.local/schemas/modification-plan.schema.json",
+  "title": "Virtuoso Incremental Modification Plan",
+  "type": "object",
+  "required": ["schemaVersion", "kind", "targets", "changes"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "kind": { "const": "virtuoso-modification-plan" },
+    "metadata": {
+      "type": "object",
+      "properties": {
+        "planId": { "type": "string", "minLength": 1 },
+        "description": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "workflow": {
+      "type": "object",
+      "required": ["id", "sequence"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "sequence": { "type": "integer", "minimum": 1 },
+        "baselineId": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    },
+    "beforeApply": {
+      "type": "object",
+      "properties": {
+        "baselineExport": {
+          "type": "object",
+          "required": ["policy"],
+          "properties": {
+            "policy": { "enum": ["if-missing", "reuse", "always", "none"] },
+            "profile": { "const": "full" },
+            "onUnavailableResults": { "enum": ["record-and-continue", "error"] }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "targets": {
+      "type": "object",
+      "properties": {
+        "schematic": { "$ref": "#/$defs/cellView" },
+        "maestro": { "$ref": "#/$defs/cellView" }
+      },
+      "minProperties": 1,
+      "additionalProperties": false
+    },
+    "options": {
+      "type": "object",
+      "properties": {
+        "stopOnError": { "const": true },
+        "savePolicy": { "const": "all-on-success" },
+        "onConflict": { "const": "error" },
+        "runSchematicCheck": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    },
+    "changes": {
+      "type": "object",
+      "properties": {
+        "deviceParameters": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/deviceParameterOperation" }
+        },
+        "tests": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/testOperation" }
+        }
+      },
+      "minProperties": 1,
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "cellView": {
+      "type": "object",
+      "required": ["library", "cell", "view"],
+      "properties": {
+        "library": { "type": "string", "minLength": 1 },
+        "cell": { "type": "string", "minLength": 1 },
+        "view": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    },
+    "parameterMap": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "type": "object",
+        "required": ["value"],
+        "properties": {
+          "value": { "type": "string", "minLength": 1 },
+          "valueType": { "enum": ["expression", "string"] }
+        },
+        "additionalProperties": false
+      }
+    },
+    "deviceParameterOperation": {
+      "type": "object",
+      "required": ["id", "operation", "instance", "parameters"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "operation": { "const": "set" },
+        "instance": { "type": "string", "minLength": 1 },
+        "expect": {
+          "type": "object",
+          "properties": {
+            "master": { "$ref": "#/$defs/cellView" },
+            "parameters": {
+              "type": "object",
+              "additionalProperties": { "type": "string" }
+            }
+          },
+          "additionalProperties": false
+        },
+        "parameters": { "$ref": "#/$defs/parameterMap" }
+      },
+      "additionalProperties": false
+    },
+    "settingValue": {
+      "oneOf": [
+        { "type": "string" },
+        { "type": "number" },
+        { "type": "boolean" },
+        { "type": "array", "items": { "type": "string" } }
+      ]
+    },
+    "settings": {
+      "type": "object",
+      "additionalProperties": { "$ref": "#/$defs/settingValue" }
+    },
+    "analysisOperation": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["id", "operation", "analysis"],
+          "properties": {
+            "id": { "type": "string", "minLength": 1 },
+            "operation": { "const": "add" },
+            "analysis": {
+              "type": "object",
+              "required": ["name", "type"],
+              "properties": {
+                "name": { "type": "string", "minLength": 1 },
+                "type": { "type": "string", "minLength": 1 },
+                "settings": { "$ref": "#/$defs/settings" }
+              },
+              "additionalProperties": false
+            },
+            "expect": {
+              "type": "object",
+              "properties": { "settings": { "$ref": "#/$defs/settings" } },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["id", "operation", "selector"],
+          "properties": {
+            "id": { "type": "string", "minLength": 1 },
+            "operation": { "const": "delete" },
+            "selector": {
+              "type": "object",
+              "required": ["name"],
+              "properties": {
+                "name": { "type": "string", "minLength": 1 },
+                "type": { "type": "string" }
+              },
+              "additionalProperties": false
+            },
+            "expect": {
+              "type": "object",
+              "properties": { "settings": { "$ref": "#/$defs/settings" } },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "outputOperation": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["id", "operation", "output"],
+          "properties": {
+            "id": { "type": "string", "minLength": 1 },
+            "operation": { "const": "add" },
+            "output": {
+              "type": "object",
+              "required": ["name"],
+              "properties": {
+                "name": { "type": "string", "minLength": 1 },
+                "type": {
+                  "enum": ["expression", "point", "corners", "sweeps", "all", "terminal", "terminalV", "net"]
+                },
+                "expression": { "type": "string" },
+                "signalName": { "type": "string" },
+                "plot": { "type": "boolean" },
+                "save": { "type": "boolean" }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["id", "operation", "selector"],
+          "properties": {
+            "id": { "type": "string", "minLength": 1 },
+            "operation": { "const": "delete" },
+            "selector": {
+              "type": "object",
+              "required": ["name"],
+              "properties": { "name": { "type": "string", "minLength": 1 } },
+              "additionalProperties": false
+            },
+            "expect": {
+              "type": "object",
+              "properties": { "expression": { "type": "string" } },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "testOperation": {
+      "type": "object",
+      "required": ["testName"],
+      "properties": {
+        "testName": { "type": "string", "minLength": 1 },
+        "analyses": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/analysisOperation" }
+        },
+        "outputs": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/outputOperation" }
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

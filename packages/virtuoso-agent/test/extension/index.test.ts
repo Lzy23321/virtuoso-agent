@@ -9,6 +9,7 @@ const runtimeMocks = vi.hoisted(() => ({
 	getManagedVirtuosoInstances: vi.fn(),
 	listManagedVirtuosoLibraries: vi.fn(),
 	listManagedVirtuosoLibraryCellViews: vi.fn(),
+	modifyManagedVirtuoso: vi.fn(),
 	showManagedVirtuosoCellView: vi.fn(),
 	startVirtuosoUiSession: vi.fn(),
 }));
@@ -31,7 +32,7 @@ describe("virtuoso-agent pi extension", () => {
 		vi.clearAllMocks();
 	});
 
-	it("registers the consolidated five-tool interface", () => {
+	it("registers the consolidated six-tool interface", () => {
 		const tools: CapturedTool[] = [];
 		const pi = {
 			registerTool(tool: unknown) {
@@ -47,6 +48,7 @@ describe("virtuoso-agent pi extension", () => {
 			"virtuoso_inventory",
 			"virtuoso_cellview",
 			"virtuoso_export",
+			"virtuoso_modify",
 		]);
 		expect(tools.every((tool) => (tool.parameters as { type?: string }).type === "object")).toBe(true);
 		expect(tools.map((tool) => tool.name)).not.toContain("virtuoso_use_instance");
@@ -76,12 +78,17 @@ describe("virtuoso-agent pi extension", () => {
 		const exportParameters = tools.find((tool) => tool.name === "virtuoso_export")?.parameters as {
 			type?: string;
 		};
+		const modifyParameters = tools.find((tool) => tool.name === "virtuoso_modify")?.parameters as {
+			type?: string;
+		};
 		expect(inventoryParameters.type).toBe("object");
 		expect(cellViewParameters.type).toBe("object");
 		expect(exportParameters.type).toBe("object");
+		expect(modifyParameters.type).toBe("object");
 		const inventorySchema = JSON.stringify(inventoryParameters);
 		const cellViewSchema = JSON.stringify(cellViewParameters);
 		const exportSchema = JSON.stringify(exportParameters);
+		const modifySchema = JSON.stringify(modifyParameters);
 		expect(inventorySchema).toContain('"const":"libraries"');
 		expect(inventorySchema).toContain('"const":"cellviews"');
 		expect(cellViewSchema).toContain('"const":"current"');
@@ -96,6 +103,9 @@ describe("virtuoso-agent pi extension", () => {
 		expect(exportSchema).toContain('"const":"results"');
 		expect(exportSchema).toContain('"const":"top-level"');
 		expect(exportSchema).toContain('"const":"spectre"');
+		expect(modifySchema).toContain('"const":"validate"');
+		expect(modifySchema).toContain('"const":"dry-run"');
+		expect(modifySchema).toContain('"const":"apply"');
 	});
 
 	it("automatically binds the instance used by a successful business operation", async () => {
@@ -212,6 +222,41 @@ describe("virtuoso-agent pi extension", () => {
 		);
 		expect(runtimeMocks.exportManagedSchematicBundle).toHaveBeenCalledWith(
 			expect.objectContaining({ netlist: "none", schematicInstances: "top-level" }),
+		);
+	});
+
+	it("applies a JSON modification plan and binds the managed instance", async () => {
+		const tools: CapturedTool[] = [];
+		const pi = {
+			registerTool(tool: unknown) {
+				tools.push(tool as CapturedTool);
+			},
+		} as unknown as ExtensionAPI;
+		virtuosoExtension(pi);
+		runtimeMocks.modifyManagedVirtuoso.mockResolvedValue({
+			ok: true,
+			value: {
+				instance: { instanceId: "vui-modify" },
+				validation: { operationCount: 3 },
+				reportPath: "/tmp/modifications/workflow/steps/001/report.json",
+			},
+		});
+
+		const output = (await tools
+			.find((tool) => tool.name === "virtuoso_modify")
+			?.execute("modify-call", {
+				planPath: "/tmp/plan.json",
+				mode: "apply",
+				instanceId: "vui-modify",
+			})) as { content: Array<{ text: string }> };
+
+		expect(output.content[0].text).toContain("Applied 3 Virtuoso modification operation(s)");
+		expect(runtimeMocks.modifyManagedVirtuoso).toHaveBeenCalledWith(
+			expect.objectContaining({
+				planPath: "/tmp/plan.json",
+				mode: "apply",
+				instanceId: "vui-modify",
+			}),
 		);
 	});
 });

@@ -14,6 +14,12 @@ For controlled Virtuoso bridge work, operate only on registered managed instance
 - Before launching a visible instance, require a real X11 connection. Prefer the `DISPLAY`, `XAUTHORITY`, `WAYLAND_DISPLAY`, and `XDG_RUNTIME_DIR` inherited from the graphical desktop session. Never guess a display from X socket filenames. If the X11 handshake fails, report the error and do not launch Virtuoso.
 - Use `virtuoso_inventory` with `action: "libraries"` to discover libraries or `action: "cellviews"` plus `library` to inspect one library. Do not inventory when the user already supplied an exact target.
 - Use `virtuoso_export` with `action: "schematic"` or `action: "maestro"` to create a read-only Cadence-native simulation bundle. This exports Spectre/OCEAN files but never runs simulation.
+- Use `virtuoso_modify` only after writing a valid `virtuoso-modification-plan` JSON file. It supports existing schematic instance parameters and per-test Maestro analyses/outputs; it does not place devices or edit schematic wiring.
+- Run `virtuoso_modify` with `mode: "validate"` first when constructing a new plan. Use `mode: "dry-run"` to check live object existence and conflicts. Use `mode: "apply"` only when the requested database mutation is authorized.
+- For the first mutation in a continuous optimization workflow, set `workflow.sequence` to `1` and `beforeApply.baselineExport.policy` to `"if-missing"` with profile `"full"`. Use the returned baseline ID, increment sequence, and policy `"reuse"` for later mutations in the same workflow.
+- Treat `workflow.json` and each step's `report.json` as authoritative. Do not infer that a mutation succeeded merely because generated SKILL exists.
+- Use optional `expect` values for device parameters, analysis settings, and deleted output expressions when the current state is known. A conflict must stop the modification; do not silently regenerate the plan around an unexpected value.
+- Analysis deletion disables it through the public MAE API. It is absent from enabled analyses and generated OCEAN, but disabled options may remain available for later re-enabling.
 - For Maestro, use `scope: "all"` by default, `scope: "top"` for only `maestro/maestro.ocn`, `scope: "tests"` for every test without the top-level script, or `scope: "test"` plus an exact `testName` for one test.
 - Treat `bundle.json` as the authoritative artifact index. Read exact paths recorded there; never discover a primary artifact by enumerating bundle files with `find`, `ls`, `head`, globs, or filename guesses.
 - For a schematic bundle, read `bundle.json` first and treat its recorded `schematic/netlist/input.scs` as the only primary netlist entry point.
@@ -28,7 +34,7 @@ When an operation reports multiple candidates, ask the user to choose and retry 
 
 For CLI workflows, start Virtuoso explicitly with `vab session start` and reuse it for later commands. `vab cellview open` is a compatibility alias for the managed `vab cellview show`; neither command starts or closes Virtuoso implicitly.
 
-Do not reconstruct schematic topology or Maestro configuration as a custom JSON format. Prefer the Cadence-generated Spectre and OCEAN artifacts in the bundle.
+Do not reconstruct schematic topology or Maestro configuration as an ad hoc JSON format. Read state from Cadence-generated export artifacts. The only supported mutation JSON is the versioned modification plan validated by `virtuoso_modify`.
 Do not generate large SKILL scripts as the primary path. Do not use arbitrary SKILL eval for design database operations.
 Do not scan, attach to, or claim control over Virtuoso processes that are not present in `virtuoso_instances`.
 If an earlier step inspected the wrong artifact, stop and inspect the manifest-recorded artifact before answering; never treat accumulated context cost as a reason to leave a conclusion unverified.

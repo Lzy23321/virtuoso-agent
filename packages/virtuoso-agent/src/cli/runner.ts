@@ -19,6 +19,8 @@ import {
 	type MaestroOutputExportMode,
 	type MaestroSchematicInstancesMode,
 	type ManagedVirtuosoRequest,
+	type ModificationMode,
+	modifyManagedVirtuoso,
 	type SchematicNetlistMode,
 	showManagedVirtuosoCellView,
 	showVirtuosoCellViewInSession,
@@ -146,6 +148,18 @@ export async function runCli(argv: string[], io: CliIo = consoleIo): Promise<num
 		return 1;
 	}
 
+	const modifyCommand = parseModifyCommand(argv);
+	if (modifyCommand.ok) {
+		const result = await modifyManagedVirtuoso(modifyCommand.request);
+		writeJson(io, result, includeProcessOutput);
+		return result.ok ? 0 : 1;
+	}
+	if (modifyCommand.error) {
+		io.stderr(`Error: ${modifyCommand.error}`);
+		writeUsage(io);
+		return 1;
+	}
+
 	const maestroExportCommand = parseMaestroExportCommand(argv);
 	if (maestroExportCommand.ok) {
 		const result = await exportManagedMaestroBundle(maestroExportCommand.request);
@@ -242,6 +256,15 @@ interface ParsedInventoryCellViewsCommand {
 	ok: true;
 	request: ManagedVirtuosoRequest & {
 		library: string;
+	};
+}
+
+interface ParsedModifyCommand {
+	ok: true;
+	request: ManagedVirtuosoRequest & {
+		planPath: string;
+		mode: ModificationMode;
+		outputDirectory?: string;
 	};
 }
 
@@ -382,6 +405,44 @@ function parseInventoryCellViewsCommand(argv: string[]): ParsedInventoryCellView
 		request: {
 			...options.value,
 			library,
+		},
+	};
+}
+
+function parseModifyCommand(argv: string[]): ParsedModifyCommand | IgnoredCommand {
+	if (argv[0] !== "modify") {
+		return { ok: false };
+	}
+	const options = parseManagedVirtuosoOptions(
+		argv.slice(1).filter((arg) => arg !== "--validate" && arg !== "--dry-run" && arg !== "--apply"),
+	);
+	if (!options.ok) {
+		return options;
+	}
+	const planPath = getOptionValue(argv, "--plan");
+	if (!planPath) {
+		return { ok: false, error: "modify requires --plan." };
+	}
+	const selectedModes: ModificationMode[] = [];
+	if (argv.includes("--validate")) {
+		selectedModes.push("validate");
+	}
+	if (argv.includes("--dry-run")) {
+		selectedModes.push("dry-run");
+	}
+	if (argv.includes("--apply")) {
+		selectedModes.push("apply");
+	}
+	if (selectedModes.length !== 1) {
+		return { ok: false, error: "modify requires exactly one of --validate, --dry-run, or --apply." };
+	}
+	return {
+		ok: true,
+		request: {
+			...options.value,
+			planPath,
+			mode: selectedModes[0],
+			outputDirectory: getOptionValue(argv, "--output-dir"),
 		},
 	};
 }
@@ -610,7 +671,8 @@ function parseManagedVirtuosoOptions(args: string[]): { ok: true; value: Managed
 			arg === "--history" ||
 			arg === "--schematic-instances" ||
 			arg === "--output-test" ||
-			arg === "--netlist"
+			arg === "--netlist" ||
+			arg === "--plan"
 		) {
 			index++;
 			continue;
@@ -809,6 +871,9 @@ function writeUsage(io: CliIo, toStdout = false): void {
 	);
 	write(
 		"  vab schematic export --lib <lib> --cell <cell> --view <view> --json [--netlist none|spectre] [--schematic-instances none|top-level] [--output-dir <dir>] [--instance-id <id>] [--cds-lib <path>] [--registry-dir <dir>] [--timeout-ms <ms>]",
+	);
+	write(
+		"  vab modify --plan <plan.json> (--validate|--dry-run|--apply) --json [--output-dir <dir>] [--instance-id <id>] [--cds-lib <path>] [--registry-dir <dir>] [--timeout-ms <ms>]",
 	);
 	write(
 		"  vab cellview open --lib <lib> --cell <cell> --view <view> --json [--instance-id <id>] [--cds-lib <path>] [--registry-dir <dir>] [--mode r|a|w] [--timeout-ms <ms>]",

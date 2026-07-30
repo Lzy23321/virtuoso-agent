@@ -130,6 +130,43 @@ describe("CLI runner", () => {
 		expect(io.stderrLines).toEqual([]);
 		expect(io.stdoutLines[0]).toBe("Usage:");
 		expect(io.stdoutLines).toContain("  vab session list --json [--registry-dir <dir>]");
+		expect(io.stdoutLines.some((line) => line.startsWith("  vab modify --plan"))).toBe(true);
+	});
+
+	it("validates a modification plan without requiring a managed instance", async () => {
+		const io = createCapturedIo();
+		const workDir = await mkdtemp(join(tmpdir(), "virtuoso-agent-cli-modify-"));
+		const planPath = join(workDir, "plan.json");
+		await writeFile(
+			planPath,
+			`${JSON.stringify({
+				schemaVersion: 1,
+				kind: "virtuoso-modification-plan",
+				targets: {
+					schematic: { library: "test_tb", cell: "two_stage_amp_tb", view: "schematic" },
+				},
+				changes: {
+					deviceParameters: [
+						{
+							id: "set-c0",
+							operation: "set",
+							instance: "C0",
+							parameters: { c: { value: "2p", valueType: "expression" } },
+						},
+					],
+				},
+			})}\n`,
+			"utf8",
+		);
+
+		const exitCode = await runCli(["modify", "--plan", planPath, "--validate", "--json"], io);
+
+		expect(exitCode).toBe(0);
+		expect(io.stderrLines).toEqual([]);
+		const output = JSON.parse(io.stdoutLines[0]);
+		expect(output.ok).toBe(true);
+		expect(output.value.mode).toBe("validate");
+		expect(output.value.validation.operationCount).toBe(1);
 	});
 
 	it("prints a session start dry-run command", async () => {

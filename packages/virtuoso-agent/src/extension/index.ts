@@ -11,6 +11,7 @@ import {
 	getManagedVirtuosoInstances,
 	listManagedVirtuosoLibraries,
 	listManagedVirtuosoLibraryCellViews,
+	modifyManagedVirtuoso,
 	showManagedVirtuosoCellView,
 	startVirtuosoUiSession,
 } from "../index.ts";
@@ -368,11 +369,53 @@ export default function (pi: ExtensionAPI) {
 		},
 	});
 
+	const modifyTool = defineTool({
+		name: "virtuoso_modify",
+		label: "Modify Virtuoso Setup",
+		description:
+			"Validate, dry-run, or apply a versioned JSON modification plan through the currently managed Virtuoso UI instance. Supports existing schematic instance parameters plus per-test Maestro analyses and outputs. Apply saves database changes and can create/reuse a full pre-modification export baseline.",
+		parameters: Type.Object({
+			planPath: Type.String({
+				description: "Absolute or working-directory-relative path to a virtuoso-modification-plan JSON file.",
+			}),
+			mode: Type.Union([Type.Literal("validate"), Type.Literal("dry-run"), Type.Literal("apply")], {
+				description:
+					"validate checks JSON only; dry-run checks live targets without saving; apply performs preflight, optional baseline export, modification, save, and UI refresh.",
+			}),
+			outputDirectory: Type.Optional(
+				Type.String({
+					description:
+						"Optional parent directory for workflow artifacts. Defaults to .virtuoso-agent/modifications under the managed instance cwd.",
+				}),
+			),
+			...managedInstanceParameters,
+		}),
+		async execute(_toolCallId, params) {
+			const result = await modifyManagedVirtuoso({
+				...params,
+				instanceId: params.instanceId ?? boundInstanceId,
+			});
+			if (result.ok && result.value.instance) {
+				boundInstanceId = result.value.instance.instanceId;
+			}
+			const text = result.ok
+				? params.mode === "validate"
+					? `Modification plan is valid with ${result.value.validation.operationCount} operation(s): ${result.value.planPath}`
+					: `${params.mode === "apply" ? "Applied" : "Planned"} ${result.value.validation.operationCount} Virtuoso modification operation(s). Report: ${result.value.reportPath}`
+				: result.error.message;
+			return {
+				content: [{ type: "text", text }],
+				details: compactAgentOutput(result) as unknown,
+			};
+		},
+	});
+
 	pi.registerTool(instancesTool);
 	pi.registerTool(launchInstanceTool);
 	pi.registerTool(inventoryTool);
 	pi.registerTool(cellViewTool);
 	pi.registerTool(exportTool);
+	pi.registerTool(modifyTool);
 }
 
 function invalidToolInput(message: string) {

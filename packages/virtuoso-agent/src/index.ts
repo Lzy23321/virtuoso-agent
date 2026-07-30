@@ -77,6 +77,26 @@ export {
 	showManagedVirtuosoCellView,
 } from "./runtime/workflows/managed-virtuoso.ts";
 export type {
+	AnalysisModification,
+	AnalysisSettingValue,
+	BaselinePolicy,
+	DeviceParameterModification,
+	ModificationCellViewTarget,
+	ModificationExecutionSnapshot,
+	ModificationMode,
+	ModificationResult,
+	ModifyVirtuosoRequest,
+	OutputModification,
+	TestModification,
+	VirtuosoModificationPlan,
+} from "./runtime/workflows/modification.ts";
+export {
+	loadVirtuosoModificationPlan,
+	modifyManagedVirtuoso,
+	renderVirtuosoModificationSkill,
+	validateVirtuosoModificationPlan,
+} from "./runtime/workflows/modification.ts";
+export type {
 	ExportSimulationBundleRequest,
 	MaestroExportScope,
 	MaestroOutputExportMode,

@@ -17,6 +17,9 @@ vab schematic export --lib worklib --cell ota_tb --view schematic --netlist none
 vab maestro export --lib worklib --cell ota_tb --view maestro --json
 vab maestro export --lib worklib --cell ota_tb --view maestro --outputs all --history Interactive.1 --json
 vab maestro export --lib worklib --cell ota_tb --view maestro --schematic-instances top-level --json
+vab modify --plan /path/to/modification-plan.json --validate --json
+vab modify --plan /path/to/modification-plan.json --dry-run --json
+vab modify --plan /path/to/modification-plan.json --apply --json
 ```
 
 `vab cellview open` is a compatibility alias for `vab cellview show`. Both require an existing managed UI session and never start or close Virtuoso implicitly. If no matching session exists, start one explicitly with `vab session start`.
@@ -37,3 +40,99 @@ Schematic and Maestro reads are exported from the existing managed Virtuoso proc
 - `bundle.json` only records target identity, test discovery, artifact paths, hashes, provenance, and file-level validation.
 
 Bundles are written under `<project>/.virtuoso-agent/bundles/` by default. Large Cadence files stay on disk; tool results return their paths.
+
+## Incremental modification plans
+
+`virtuoso_modify` and `vab modify` consume a versioned JSON plan instead of arbitrary SKILL. The runtime currently supports only:
+
+- setting parameters on existing schematic instances through instance CDF data;
+- adding or deleting/enabling per-test Maestro analyses;
+- adding or deleting per-test Maestro outputs.
+
+It intentionally does not add, delete, place, or wire schematic instances. The canonical schema is [`schemas/modification-plan.schema.json`](schemas/modification-plan.schema.json).
+
+```json
+{
+  "schemaVersion": 1,
+  "kind": "virtuoso-modification-plan",
+  "workflow": {
+    "id": "ota-optimization",
+    "sequence": 1
+  },
+  "beforeApply": {
+    "baselineExport": {
+      "policy": "if-missing",
+      "profile": "full",
+      "onUnavailableResults": "record-and-continue"
+    }
+  },
+  "targets": {
+    "schematic": {
+      "library": "worklib",
+      "cell": "ota_tb",
+      "view": "schematic"
+    },
+    "maestro": {
+      "library": "worklib",
+      "cell": "ota_tb",
+      "view": "maestro"
+    }
+  },
+  "changes": {
+    "deviceParameters": [
+      {
+        "id": "set-c0",
+        "operation": "set",
+        "instance": "C0",
+        "expect": {
+          "parameters": {
+            "c": "1p"
+          }
+        },
+        "parameters": {
+          "c": {
+            "value": "2p",
+            "valueType": "expression"
+          }
+        }
+      }
+    ],
+    "tests": [
+      {
+        "testName": "worklib:ota_tb:1",
+        "analyses": [
+          {
+            "id": "disable-tran",
+            "operation": "delete",
+            "selector": {
+              "name": "tran",
+              "type": "tran"
+            }
+          }
+        ],
+        "outputs": [
+          {
+            "id": "add-vout",
+            "operation": "add",
+            "output": {
+              "name": "Vout",
+              "type": "expression",
+              "expression": "VT(\"/Vout\")",
+              "plot": false,
+              "save": true
+            }
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+`validate` checks JSON without requiring a live Virtuoso instance. `dry-run` resolves all live instances, parameters, tests, analyses, outputs, and conflicts without saving. `apply` always repeats that preflight in the same managed UI process before saving. Device changes use instance CDF data and invoke the callback attached to each changed parameter so dependent PDK parameters can be updated consistently.
+
+For the first step of a continuous optimization workflow, `baselineExport.policy: "if-missing"` creates a full `virtuoso_export` baseline before modification. Later plans use the same workflow ID, increment `sequence`, include the returned `baselineId`, and set the policy to `reuse`. Runtime-owned `workflow.json`, rather than the Agent-provided sequence alone, decides whether a baseline already exists.
+
+Maestro analysis deletion maps to `maeSetAnalysis(... ?enable nil)`: it disappears from the enabled analysis list and generated OCEAN, although Cadence may retain disabled analysis options for later re-enabling. Output deletion changes the active setup but does not erase values already stored in old simulation histories.
+
+Modification artifacts are written under `<project>/.virtuoso-agent/modifications/<workflow-id>/` by default. Each applied sequence keeps the original plan, resolved plan, controlled generated SKILL, before/after snapshots, and report.

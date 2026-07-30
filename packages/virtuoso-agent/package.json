@@ -9,7 +9,7 @@
 	"bin": {
 		"vab": "./dist/cli/main.js"
 	},
-	"files": ["dist", "skill-runtime", "skills", "README.md"],
+	"files": ["dist", "schemas", "skill-runtime", "skills", "README.md"],
 	"exports": {
 		".": {
 			"types": "./dist/index.d.ts",

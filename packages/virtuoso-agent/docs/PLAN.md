@@ -228,27 +228,29 @@ P1 完成标准：
 - 支持两个 job 的 scalar、spec 和 waveform comparison。
 - 增加 bundle/job retention 和 cleanup 策略。
 
-### P3：低风险 Simulation Modify
+### P3：低风险 Incremental Modify
 
-先只实现 Maestro design variable 修改：
+当前实现采用版本化 JSON plan：
 
 ```text
-plan -> preview -> approve -> restore point -> apply -> export verify -> simulate -> compare
+plan -> validate -> dry-run -> baseline export -> apply -> save -> report
 ```
 
-- 修改项包含 test、变量名、期望旧值、新值和单位。
-- 旧值不匹配时拒绝执行，防止基于过期状态写入。
-- 每次 apply 都创建可恢复 restore point，不采用“每个 TB 只备份一次”。
-- `virtuoso_export` 保存修改前后的审阅证据，但不承担恢复职责。
-- 在真实 Virtuoso 中通过 modify、restore、re-export 一致性验证后，才开放 apply。
-- Analysis、Output、Spec 和 Corner 的新增删除继续暂缓。
-
-### P4：Design Modify
-
-- 第一批只支持已有 instance parameter set。
-- target 必须包含 CellView、instance 标识、参数名和期望旧值。
+- 支持已有 schematic instance 的 CDF parameter set。
+- 支持每个 Maestro test 的 analysis enable/disable 和 output add/delete。
+- target、operation ID 和可选期望旧值均由 runtime 校验，旧值或对象状态冲突时拒绝执行。
+- 连续优化 workflow 的第一次 apply 可先创建完整 `virtuoso_export` baseline；后续 sequence 复用同一 baseline。
+- baseline 是可审阅的原始状态证据，不宣称是自动 rollback restore point。
+- 每一步保存 plan、resolved plan、受控 SKILL、before/after snapshot 和 report。
+- apply 在同一个 managed Virtuoso UI process 中执行，并保存 schematic/Maestro setup。
+- Spec、Corner、design variable 和自动 rollback 继续暂缓。
 - 不支持 device create/delete 和 connectivity。
-- 继续使用 plan/approve/apply/verify/rollback 流程。
+
+### P4：扩展 Modify
+
+- 增加经过真实 Cadence 验证的 restore/rollback。
+- 增加 design variable、spec 和 corner 的结构化修改。
+- 继续使用 plan/validate/dry-run/apply/report 流程。
 
 ### P5：Create
 
