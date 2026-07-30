@@ -13,6 +13,7 @@ export interface ManagedVirtuosoInstanceRecord {
 	mode: ManagedVirtuosoMode;
 	state: "starting" | "ready";
 	cwd: string;
+	launchCwd?: string;
 	cdsLib?: string;
 	display?: string;
 	sessionDir: string;
@@ -154,6 +155,7 @@ export async function resolveManagedVirtuosoInstance(
 				pid: instance.pid,
 				mode: instance.mode,
 				cwd: instance.cwd,
+				launchCwd: instance.launchCwd,
 				cdsLib: instance.cdsLib,
 				display: instance.display,
 				heartbeatAt: instance.heartbeatAt,
@@ -212,6 +214,7 @@ function isManagedVirtuosoInstanceRecord(value: unknown): value is ManagedVirtuo
 		(record.mode === "ui" || record.mode === "headless") &&
 		(record.state === "starting" || record.state === "ready") &&
 		typeof record.cwd === "string" &&
+		(record.launchCwd === undefined || typeof record.launchCwd === "string") &&
 		(record.cdsLib === undefined || typeof record.cdsLib === "string") &&
 		(record.display === undefined || typeof record.display === "string") &&
 		typeof record.sessionDir === "string" &&

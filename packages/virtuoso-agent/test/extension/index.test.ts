@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import virtuosoExtension from "../../src/extension/index.ts";
 
 const runtimeMocks = vi.hoisted(() => ({
+	extractManagedVirtuosoMetrics: vi.fn(),
 	exportManagedMaestroBundle: vi.fn(),
 	exportManagedSchematicBundle: vi.fn(),
 	getManagedCurrentCellView: vi.fn(),
@@ -10,6 +11,7 @@ const runtimeMocks = vi.hoisted(() => ({
 	listManagedVirtuosoLibraries: vi.fn(),
 	listManagedVirtuosoLibraryCellViews: vi.fn(),
 	modifyManagedVirtuoso: vi.fn(),
+	runManagedVirtuosoSimulation: vi.fn(),
 	showManagedVirtuosoCellView: vi.fn(),
 	startVirtuosoUiSession: vi.fn(),
 }));
@@ -23,6 +25,7 @@ vi.mock("../../src/index.ts", () => ({
 
 interface CapturedTool {
 	name: string;
+	description: string;
 	parameters: unknown;
 	execute(toolCallId: string, params: Record<string, unknown>): Promise<unknown>;
 }
@@ -32,7 +35,7 @@ describe("virtuoso-agent pi extension", () => {
 		vi.clearAllMocks();
 	});
 
-	it("registers the consolidated six-tool interface", () => {
+	it("registers the consolidated eight-tool interface", () => {
 		const tools: CapturedTool[] = [];
 		const pi = {
 			registerTool(tool: unknown) {
@@ -49,6 +52,8 @@ describe("virtuoso-agent pi extension", () => {
 			"virtuoso_cellview",
 			"virtuoso_export",
 			"virtuoso_modify",
+			"virtuoso_run",
+			"virtuoso_metric_extract",
 		]);
 		expect(tools.every((tool) => (tool.parameters as { type?: string }).type === "object")).toBe(true);
 		expect(tools.map((tool) => tool.name)).not.toContain("virtuoso_use_instance");
@@ -57,6 +62,15 @@ describe("virtuoso-agent pi extension", () => {
 		expect(tools.map((tool) => tool.name)).not.toContain("virtuoso_task");
 		expect(tools.map((tool) => tool.name)).not.toContain("virtuoso_task_validate");
 		expect(tools.map((tool) => tool.name)).not.toContain("virtuoso_run_task");
+		expect(tools.find((tool) => tool.name === "virtuoso_export")?.description).toContain(
+			"scope=all, outputs=definitions, and schematicInstances=top-level",
+		);
+		expect(tools.find((tool) => tool.name === "virtuoso_run")?.description).toContain(
+			"Sequence 1 requires baselineManifest",
+		);
+		expect(tools.find((tool) => tool.name === "virtuoso_metric_extract")?.description).toContain(
+			'"kind":"virtuoso-metric-extract-plan"',
+		);
 	});
 
 	it("uses explicit action schemas for merged tools", () => {

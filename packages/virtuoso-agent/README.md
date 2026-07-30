@@ -20,16 +20,74 @@ vab maestro export --lib worklib --cell ota_tb --view maestro --schematic-instan
 vab modify --plan /path/to/modification-plan.json --validate --json
 vab modify --plan /path/to/modification-plan.json --dry-run --json
 vab modify --plan /path/to/modification-plan.json --apply --json
+vab run --plan /path/to/run.json --json
+vab metric extract --plan /path/to/metric-extract.json --json
 ```
 
 `vab cellview open` is a compatibility alias for `vab cellview show`. Both require an existing managed UI session and never start or close Virtuoso implicitly. If no matching session exists, start one explicitly with `vab session start`.
+
+## Managed Maestro simulation V1
+
+V1 simulation supports only the fixed SKILL/MAE managed-session backend. A run plan explicitly selects either one exact test or all tests currently enabled in the Maestro setup. Test-level runs temporarily change the enabled-test selection and restore it through `unwindProtect`; the temporary selection is never saved.
+
+Before sequence 1, create its run-ready baseline with `virtuoso_export` using `action=maestro`, `scope=all`, `outputs=definitions` (or `all`), and `schematicInstances=top-level`. The bundle target must match the run target. Later sequences reuse the baseline recorded in runtime-owned `workflow.json`.
+
+```json
+{
+  "schemaVersion": 1,
+  "kind": "virtuoso-run-plan",
+  "workflow": {
+    "id": "ota-optimization",
+    "sequence": 1,
+    "baselineManifest": "/project/.virtuoso-agent/bundles/baseline/bundle.json"
+  },
+  "target": {
+    "maestro": {
+      "library": "test_tb_pi_modify",
+      "cell": "two_stage_amp_tb",
+      "view": "maestro"
+    },
+    "selection": {
+      "level": "test",
+      "testName": "test_tb_two_stage_amp_tb_1"
+    }
+  },
+  "backend": {
+    "type": "skill",
+    "execution": "managed-session"
+  },
+  "inactivityTimeoutMs": 1800000
+}
+```
+
+The runtime monitors long simulations every five seconds. It reads only newly appended bytes from the per-instance Virtuoso stdout/stderr and observes changes to `spectre.out`, `si.foregnd.log`, `exprOutputs.log*`, `.simDone`, `.simExit`, and `logStatus`. Warnings and errors are counted for diagnosis, but log text alone never decides success. If Cadence's blocking wait raises an internal callback error after submission, the runtime keeps the exact history and polls its `axlGetRunStatus` completion count instead of reporting a false simulation failure. Only actual log/result/status progress refreshes the inactivity timer; PID and heartbeat are liveness evidence. An inactivity timeout records `unknown/inactivity-timeout`, does not stop Cadence, and allows the same plan to resume monitoring without another `maeRunSimulation`.
+
+Artifacts are runtime-owned at `.virtuoso-agent/workflows/<workflow-id>/iterations/<sequence>/`. A normal run has `run.json`, `state.json`, `logs/`, and `metrics/`; it does not create a modification plan. Instance stdout/stderr contain only bytes appended during this run, while selected Cadence logs preserve their relative point/test hierarchy. PSF, netlists, and other large result files are not copied.
+
+After the run reaches `run-completed`, extraction uses a separate plan and the exact history stored in `state.json`:
+
+```json
+{
+  "schemaVersion": 1,
+  "kind": "virtuoso-metric-extract-plan",
+  "workflow": {
+    "id": "ota-optimization",
+    "sequence": 1
+  },
+  "extractor": {
+    "type": "mae-output-view"
+  }
+}
+```
+
+V1 extraction supports only `maeExportOutputView` with the Detail view. The runtime owns the output location `metrics/output-view.csv`; the plan cannot provide history, output paths, arbitrary SKILL, retries, polling intervals, or another backend. Canonical schemas are [`schemas/run-plan.schema.json`](schemas/run-plan.schema.json) and [`schemas/metric-extract-plan.schema.json`](schemas/metric-extract-plan.schema.json).
 
 ## Cadence-native simulation bundles
 
 Schematic and Maestro reads are exported from the existing managed Virtuoso process. The package does not reconstruct topology or Maestro setup data as a custom manifest.
 
 - Schematic export saves the complete Cadence Spectre netlist directory, with `input.scs` as the primary artifact.
-- Maestro export saves three OCEAN artifact classes: the top-level Assembler script at `maestro/maestro.ocn`, plus `single.ocn` and `sweep.ocn` under every `tests/<index>/` directory. Every discovered test also receives a complete Spectre netlist directory.
+- Maestro export saves three OCEAN artifact classes: the top-level Assembler script at `maestro/maestro.ocn`, plus `single.ocn` and `sweep.ocn` under every enabled `tests/<index>/` directory. Every exported enabled test also receives a complete Spectre netlist directory. Disabled tests remain represented by the top-level Cadence script and are listed in `bundle.json.disabledTests`; the runtime does not misrepresent a script that disables its target as a runnable per-test artifact.
 - Schematic export accepts `netlist: "none" | "spectre"` and `schematicInstances: "none" | "top-level"`. The defaults preserve the original netlist-only behavior. Selecting `netlist: "none"` and `schematicInstances: "top-level"` writes only `schematic/instances.json`.
 - Maestro export accepts `scope: "none" | "all" | "top" | "tests" | "test"`. `all` is the default, while `none` suppresses all OCEAN/netlist artifacts so outputs or placement can be exported independently. `test` requires the exact Maestro `testName`; `scope: "none"` may also use `testName` to select one schematic placement.
 - Maestro output export is independently optional through `outputs: "none" | "definitions" | "results" | "all"` (`--outputs` in the CLI). The default is `none`. Definitions are written once to `outputs/definitions/all.csv`; completed values are exported from Cadence's Detail output view once to `outputs/results/<history>/all.csv`. Both aggregate files retain the `Test` column and are not split into per-test CSV files.

@@ -60,6 +60,7 @@ interface PreparedMaestro {
 	topOceanPath: string | null;
 	virtuosoVersion: string;
 	tests: PreparedMaestroTest[];
+	disabledTests?: string[];
 	outputsMode: MaestroOutputExportMode;
 	outputDefinitionsPath: string | null;
 	outputResultsPath: string | null;
@@ -622,6 +623,11 @@ export async function exportManagedMaestroBundle(
 		);
 	}
 
+	const disabledTests = prepared.value.disabledTests ?? [];
+	const warnings =
+		disabledTests.length > 0
+			? [`Skipped runnable per-test artifacts for disabled Maestro tests: ${disabledTests.join(", ")}.`]
+			: [];
 	const manifestValue = {
 		schemaVersion: MAESTRO_BUNDLE_SCHEMA_VERSION,
 		kind: "maestro-simulation-bundle",
@@ -638,6 +644,7 @@ export async function exportManagedMaestroBundle(
 		},
 		...(topArtifact ? { topLevelOcean: topArtifact } : {}),
 		tests,
+		disabledTests,
 		...(outputs !== "none"
 			? {
 					outputs: {
@@ -671,7 +678,7 @@ export async function exportManagedMaestroBundle(
 			status: "passed",
 			checks: validationChecks,
 		},
-		warnings: [],
+		warnings,
 	};
 	const manifest = await writeBundleManifest(bundleDirectory, manifestValue, generatedAt);
 	if (!manifest.ok) {
@@ -683,7 +690,7 @@ export async function exportManagedMaestroBundle(
 		bundleDirectory,
 		manifest: manifest.value,
 		artifacts,
-		warnings: [],
+		warnings,
 		instance: resolvedInstance.value,
 	});
 }

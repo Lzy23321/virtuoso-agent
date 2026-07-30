@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://virtuoso-agent.local/schemas/metric-extract-plan.schema.json",
+  "title": "Virtuoso MAE Output View Extraction Plan",
+  "type": "object",
+  "required": ["schemaVersion", "kind", "workflow", "extractor"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "kind": { "const": "virtuoso-metric-extract-plan" },
+    "workflow": {
+      "type": "object",
+      "required": ["id", "sequence"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$" },
+        "sequence": { "type": "integer", "minimum": 1 }
+      },
+      "additionalProperties": false
+    },
+    "extractor": {
+      "type": "object",
+      "required": ["type"],
+      "properties": { "type": { "const": "mae-output-view" } },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

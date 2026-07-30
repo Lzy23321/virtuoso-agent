@@ -1,0 +1,88 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://virtuoso-agent.local/schemas/run-plan.schema.json",
+  "title": "Virtuoso Managed Maestro Run Plan",
+  "type": "object",
+  "required": ["schemaVersion", "kind", "workflow", "target", "backend"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "kind": { "const": "virtuoso-run-plan" },
+    "workflow": {
+      "type": "object",
+      "required": ["id", "sequence"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$" },
+        "sequence": { "type": "integer", "minimum": 1 },
+        "baselineManifest": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    },
+    "target": {
+      "type": "object",
+      "required": ["maestro", "selection"],
+      "properties": {
+        "maestro": { "$ref": "#/$defs/cellView" },
+        "selection": {
+          "oneOf": [
+            {
+              "type": "object",
+              "required": ["level", "testName"],
+              "properties": {
+                "level": { "const": "test" },
+                "testName": { "type": "string", "minLength": 1 }
+              },
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "required": ["level"],
+              "properties": { "level": { "const": "maestro" } },
+              "additionalProperties": false
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "backend": {
+      "type": "object",
+      "required": ["type", "execution"],
+      "properties": {
+        "type": { "const": "skill" },
+        "execution": { "const": "managed-session" }
+      },
+      "additionalProperties": false
+    },
+    "inactivityTimeoutMs": { "type": "integer", "minimum": 1000 }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "workflow": {
+            "properties": { "sequence": { "const": 1 } },
+            "required": ["sequence"]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "workflow": { "required": ["baselineManifest"] }
+        }
+      }
+    }
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "cellView": {
+      "type": "object",
+      "required": ["library", "cell", "view"],
+      "properties": {
+        "library": { "type": "string", "minLength": 1 },
+        "cell": { "type": "string", "minLength": 1 },
+        "view": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    }
+  }
+}

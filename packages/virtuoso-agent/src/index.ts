@@ -18,6 +18,7 @@ export {
 	enqueueVirtuosoBridgeSessionCommand,
 	executeVirtuosoBridgeSessionCommand,
 	getDefaultVirtuosoBridgePath,
+	readVirtuosoBridgeSessionResult,
 	runVirtuosoBridgeExpression,
 	skillString,
 	startVirtuosoBridgeSession,
@@ -109,6 +110,25 @@ export {
 	exportManagedMaestroBundle,
 	exportManagedSchematicBundle,
 } from "./runtime/workflows/simulation-bundle.ts";
+export type {
+	ExtractManagedSimulationMetricsRequest,
+	RunManagedSimulationRequest,
+	SimulationIterationState,
+	SimulationLogArtifact,
+	SimulationMetricExtractResult,
+	SimulationRunResult,
+	SimulationRunStatus,
+	VirtuosoMetricExtractPlan,
+	VirtuosoRunPlan,
+} from "./runtime/workflows/simulation-run.ts";
+export {
+	extractManagedVirtuosoMetrics,
+	loadVirtuosoMetricExtractPlan,
+	loadVirtuosoRunPlan,
+	runManagedVirtuosoSimulation,
+	validateVirtuosoMetricExtractPlan,
+	validateVirtuosoRunPlan,
+} from "./runtime/workflows/simulation-run.ts";
 export type {
 	OpenVirtuosoCellViewRequest,
 	ShowVirtuosoCellViewInSessionRequest,

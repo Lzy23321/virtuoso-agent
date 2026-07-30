@@ -158,11 +158,8 @@ describe("simulation bundle export", () => {
 			const bundleDirectory = bundleMatch?.[1] ?? "";
 			const topOceanPath = join(bundleDirectory, "maestro", "maestro.ocn");
 			const firstDirectory = join(bundleDirectory, "tests", "001");
-			const secondDirectory = join(bundleDirectory, "tests", "002");
 			const firstSourcePath = join(instance.workDir, "cadence-test-1", "input.scs");
-			const secondSourcePath = join(instance.workDir, "cadence-test-2", "input.scs");
 			await mkdir(firstDirectory, { recursive: true });
-			await mkdir(secondDirectory, { recursive: true });
 			await writeFile(
 				topOceanPath,
 				[
@@ -176,17 +173,8 @@ describe("simulation bundle export", () => {
 				"utf8",
 			);
 			await writeSingleOcean(join(firstDirectory, "single.ocn"), "ota_lib", "ota_ac_tb");
-			await writeSingleOcean(join(secondDirectory, "single.ocn"), "alternate_tb", "ota_stb_tb");
 			await writeSweepOcean(join(firstDirectory, "sweep.ocn"), "ota_lib", "ota_tb", "ac_test", ["stb_test"]);
-			await writeSweepOcean(join(secondDirectory, "sweep.ocn"), "ota_lib", "ota_tb", "stb_test", ["ac_test"]);
 			await writeSpectreNetlist(firstSourcePath, "ota_lib", "ota_ac_tb", "schematic", "ac ac start=1 stop=1G");
-			await writeSpectreNetlist(
-				secondSourcePath,
-				"alternate_tb",
-				"ota_stb_tb",
-				"schematic",
-				"stb stb start=1 stop=1G",
-			);
 			return {
 				scope: "all",
 				topOceanPath,
@@ -197,6 +185,7 @@ describe("simulation bundle export", () => {
 				outputResultsHistoryName: null,
 				schematicInstancesMode: "none",
 				schematicInstancesPath: null,
+				disabledTests: ["stb_test"],
 				tests: [
 					{
 						index: 1,
@@ -206,15 +195,6 @@ describe("simulation bundle export", () => {
 						sweepOceanPath: join(firstDirectory, "sweep.ocn"),
 						netlistPath: firstSourcePath,
 						design: { library: "ota_lib", cell: "ota_ac_tb", view: "schematic" },
-					},
-					{
-						index: 2,
-						name: "stb_test",
-						enabled: false,
-						singleOceanPath: join(secondDirectory, "single.ocn"),
-						sweepOceanPath: join(secondDirectory, "sweep.ocn"),
-						netlistPath: secondSourcePath,
-						design: { library: "alternate_tb", cell: "ota_stb_tb", view: "schematic" },
 					},
 				],
 			};
@@ -244,6 +224,7 @@ describe("simulation bundle export", () => {
 					format: "ocean-xl",
 					path: "maestro/maestro.ocn",
 				},
+				disabledTests: ["stb_test"],
 				tests: [
 					{
 						name: "ac_test",
@@ -253,22 +234,11 @@ describe("simulation bundle export", () => {
 						singleOcean: { path: "tests/001/single.ocn" },
 						sweepOcean: { path: "tests/001/sweep.ocn" },
 					},
-					{
-						name: "stb_test",
-						enabled: false,
-						status: "complete",
-						design: { library: "alternate_tb", cell: "ota_stb_tb", view: "schematic" },
-						singleOcean: { path: "tests/002/single.ocn" },
-						sweepOcean: { path: "tests/002/sweep.ocn" },
-					},
 				],
 			});
 			expect(
 				await readFile(join(result.value.bundleDirectory, "tests", "001", "netlist", "input.scs"), "utf8"),
 			).toContain("ac ac start=1 stop=1G");
-			expect(
-				await readFile(join(result.value.bundleDirectory, "tests", "002", "netlist", "input.scs"), "utf8"),
-			).toContain("stb stb start=1 stop=1G");
 			expect(
 				JSON.parse(await readFile(join(result.value.bundleDirectory, "tests", "001", "test.json"), "utf8")),
 			).toMatchObject({
@@ -282,9 +252,9 @@ describe("simulation bundle export", () => {
 				"ocean-single",
 				"ocean-sweep",
 				"spectre-netlist",
-				"ocean-single",
-				"ocean-sweep",
-				"spectre-netlist",
+			]);
+			expect(result.value.warnings).toEqual([
+				"Skipped runnable per-test artifacts for disabled Maestro tests: stb_test.",
 			]);
 			expect(commandIndex).toBe(1);
 		}

@@ -11,6 +11,7 @@ import {
 	compactAgentOutput,
 	exportManagedMaestroBundle,
 	exportManagedSchematicBundle,
+	extractManagedVirtuosoMetrics,
 	getManagedCurrentCellView,
 	getManagedVirtuosoInstances,
 	listManagedVirtuosoLibraries,
@@ -21,6 +22,7 @@ import {
 	type ManagedVirtuosoRequest,
 	type ModificationMode,
 	modifyManagedVirtuoso,
+	runManagedVirtuosoSimulation,
 	type SchematicNetlistMode,
 	showManagedVirtuosoCellView,
 	showVirtuosoCellViewInSession,
@@ -160,6 +162,30 @@ export async function runCli(argv: string[], io: CliIo = consoleIo): Promise<num
 		return 1;
 	}
 
+	const runCommand = parseRunCommand(argv);
+	if (runCommand.ok) {
+		const result = await runManagedVirtuosoSimulation(runCommand.request);
+		writeJson(io, result, includeProcessOutput);
+		return result.ok ? 0 : 1;
+	}
+	if (runCommand.error) {
+		io.stderr(`Error: ${runCommand.error}`);
+		writeUsage(io);
+		return 1;
+	}
+
+	const metricExtractCommand = parseMetricExtractCommand(argv);
+	if (metricExtractCommand.ok) {
+		const result = await extractManagedVirtuosoMetrics(metricExtractCommand.request);
+		writeJson(io, result, includeProcessOutput);
+		return result.ok ? 0 : 1;
+	}
+	if (metricExtractCommand.error) {
+		io.stderr(`Error: ${metricExtractCommand.error}`);
+		writeUsage(io);
+		return 1;
+	}
+
 	const maestroExportCommand = parseMaestroExportCommand(argv);
 	if (maestroExportCommand.ok) {
 		const result = await exportManagedMaestroBundle(maestroExportCommand.request);
@@ -266,6 +292,11 @@ interface ParsedModifyCommand {
 		mode: ModificationMode;
 		outputDirectory?: string;
 	};
+}
+
+interface ParsedPlanCommand {
+	ok: true;
+	request: ManagedVirtuosoRequest & { planPath: string };
 }
 
 interface ParsedInspectCellViewCommand {
@@ -445,6 +476,28 @@ function parseModifyCommand(argv: string[]): ParsedModifyCommand | IgnoredComman
 			outputDirectory: getOptionValue(argv, "--output-dir"),
 		},
 	};
+}
+
+function parseRunCommand(argv: string[]): ParsedPlanCommand | IgnoredCommand {
+	if (argv[0] !== "run") return { ok: false };
+	return parseManagedPlanCommand(argv, 1, "run");
+}
+
+function parseMetricExtractCommand(argv: string[]): ParsedPlanCommand | IgnoredCommand {
+	if (argv[0] !== "metric" || argv[1] !== "extract") return { ok: false };
+	return parseManagedPlanCommand(argv, 2, "metric extract");
+}
+
+function parseManagedPlanCommand(
+	argv: string[],
+	optionsStartIndex: number,
+	label: string,
+): ParsedPlanCommand | IgnoredCommand {
+	const options = parseManagedVirtuosoOptions(argv.slice(optionsStartIndex));
+	if (!options.ok) return options;
+	const planPath = getOptionValue(argv, "--plan");
+	if (!planPath) return { ok: false, error: `${label} requires --plan.` };
+	return { ok: true, request: { ...options.value, planPath } };
 }
 
 function parseMaestroExportCommand(argv: string[]): ParsedBundleExportCommand | IgnoredCommand {
@@ -874,6 +927,10 @@ function writeUsage(io: CliIo, toStdout = false): void {
 	);
 	write(
 		"  vab modify --plan <plan.json> (--validate|--dry-run|--apply) --json [--output-dir <dir>] [--instance-id <id>] [--cds-lib <path>] [--registry-dir <dir>] [--timeout-ms <ms>]",
+	);
+	write("  vab run --plan <run.json> --json [--instance-id <id>] [--cds-lib <path>] [--registry-dir <dir>]");
+	write(
+		"  vab metric extract --plan <metric-extract.json> --json [--instance-id <id>] [--cds-lib <path>] [--registry-dir <dir>] [--timeout-ms <ms>]",
 	);
 	write(
 		"  vab cellview open --lib <lib> --cell <cell> --view <view> --json [--instance-id <id>] [--cds-lib <path>] [--registry-dir <dir>] [--mode r|a|w] [--timeout-ms <ms>]",

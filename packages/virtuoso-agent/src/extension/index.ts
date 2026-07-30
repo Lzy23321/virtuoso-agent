@@ -1,17 +1,19 @@
 #!/usr/bin/env node
 
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import { Type } from "@earendil-works/pi-ai";
 import { defineTool, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
 	compactAgentOutput,
 	exportManagedMaestroBundle,
 	exportManagedSchematicBundle,
+	extractManagedVirtuosoMetrics,
 	getManagedCurrentCellView,
 	getManagedVirtuosoInstances,
 	listManagedVirtuosoLibraries,
 	listManagedVirtuosoLibraryCellViews,
 	modifyManagedVirtuoso,
+	runManagedVirtuosoSimulation,
 	showManagedVirtuosoCellView,
 	startVirtuosoUiSession,
 } from "../index.ts";
@@ -90,7 +92,11 @@ export default function (pi: ExtensionAPI) {
 			}
 			const matches = existing.value.filter(
 				(instance) =>
-					instance.mode === "ui" && instance.cdsLib && resolve(instance.cdsLib) === resolve(params.cdsLib),
+					instance.mode === "ui" &&
+					instance.cdsLib &&
+					resolve(instance.cdsLib) === resolve(params.cdsLib) &&
+					instance.launchCwd &&
+					resolve(instance.launchCwd) === dirname(resolve(params.cdsLib)),
 			);
 			if (matches.length > 1) {
 				return {
@@ -249,7 +255,7 @@ export default function (pi: ExtensionAPI) {
 		name: "virtuoso_export",
 		label: "Export Virtuoso Simulation Bundle",
 		description:
-			"Export Cadence-native Spectre, OCEAN, optional Maestro outputs, and optional top-level schematic instance placement through a live managed Virtuoso instance. Placement export never descends into subcircuits. Does not run simulation.",
+			"Export Cadence-native Spectre, OCEAN, optional Maestro outputs, and optional top-level schematic instance placement through a live managed Virtuoso instance. For a sequence-1 virtuoso_run baseline, use action=maestro, scope=all, outputs=definitions, and schematicInstances=top-level. Placement export never descends into subcircuits. Does not run simulation.",
 		parameters: Type.Object({
 			action: Type.Union([Type.Literal("schematic"), Type.Literal("maestro")]),
 			library: Type.String(),
@@ -267,7 +273,7 @@ export default function (pi: ExtensionAPI) {
 					],
 					{
 						description:
-							"Maestro OCEAN/netlist selection. none suppresses these artifacts; all is the default; top exports maestro.ocn; tests exports every test; test exports one testName.",
+							"Maestro OCEAN/netlist selection. none suppresses these artifacts; all is the default; top exports maestro.ocn; tests exports every enabled test; test exports one exact enabled testName.",
 					},
 				),
 			),
@@ -410,12 +416,66 @@ export default function (pi: ExtensionAPI) {
 		},
 	});
 
+	const runTool = defineTool({
+		name: "virtuoso_run",
+		label: "Run Virtuoso Simulation",
+		description:
+			"Run or resume one validated virtuoso-run-plan in the bound managed Virtuoso session. Sequence 1 requires baselineManifest to reference the same Maestro target exported with scope=all, outputs=definitions or all, and schematicInstances=top-level; later sequences reuse workflow.json. During long simulations it incrementally monitors Cadence logs and completion markers; an inactivity timeout never kills Virtuoso or starts a duplicate run.",
+		parameters: Type.Object({
+			planPath: Type.String({
+				description:
+					"Path to a virtuoso-run-plan JSON file. For sequence 1, workflow.baselineManifest must reference a run-ready full Maestro export. Artifact locations are fixed by the runtime.",
+			}),
+			...managedInstanceParameters,
+		}),
+		async execute(_toolCallId, params) {
+			const result = await runManagedVirtuosoSimulation({
+				...params,
+				instanceId: params.instanceId ?? boundInstanceId,
+			});
+			if (result.ok) boundInstanceId = result.value.instance.instanceId;
+			const text = result.ok
+				? result.value.state.run.status === "completed"
+					? `Simulation ${result.value.plan.workflow.id}/${result.value.plan.workflow.sequence} completed as history ${result.value.state.run.historyName}. State: ${result.value.statePath}`
+					: `Simulation monitoring ended with ${result.value.state.run.status}. Reinvoke the same plan to resume monitoring without starting a duplicate run. State: ${result.value.statePath}`
+				: result.error.message;
+			return { content: [{ type: "text", text }], details: compactAgentOutput(result) as unknown };
+		},
+	});
+
+	const metricExtractTool = defineTool({
+		name: "virtuoso_metric_extract",
+		label: "Extract Virtuoso Metrics",
+		description:
+			'Extract the full Maestro Detail Output View for the exact completed history recorded by a workflow iteration. The plan shape is {"schemaVersion":1,"kind":"virtuoso-metric-extract-plan","workflow":{"id":"<workflow-id>","sequence":1},"extractor":{"type":"mae-output-view"}}. State paths, history names, and CSV paths are runtime-owned.',
+		parameters: Type.Object({
+			planPath: Type.String({
+				description:
+					'Path to a virtuoso-metric-extract-plan JSON file containing workflow {id, sequence} and extractor {type:"mae-output-view"}; do not provide statePath, historyName, or an output path.',
+			}),
+			...managedInstanceParameters,
+		}),
+		async execute(_toolCallId, params) {
+			const result = await extractManagedVirtuosoMetrics({
+				...params,
+				instanceId: params.instanceId ?? boundInstanceId,
+			});
+			if (result.ok) boundInstanceId = result.value.instance.instanceId;
+			const text = result.ok
+				? `Extracted ${result.value.rows} Detail row(s) from the exact run history: ${result.value.csvPath}`
+				: result.error.message;
+			return { content: [{ type: "text", text }], details: compactAgentOutput(result) as unknown };
+		},
+	});
+
 	pi.registerTool(instancesTool);
 	pi.registerTool(launchInstanceTool);
 	pi.registerTool(inventoryTool);
 	pi.registerTool(cellViewTool);
 	pi.registerTool(exportTool);
 	pi.registerTool(modifyTool);
+	pi.registerTool(runTool);
+	pi.registerTool(metricExtractTool);
 }
 
 function invalidToolInput(message: string) {

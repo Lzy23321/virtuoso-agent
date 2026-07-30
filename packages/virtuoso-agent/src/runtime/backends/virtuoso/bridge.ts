@@ -82,6 +82,7 @@ export interface VirtuosoBridgeRunResult<TValue> {
 
 export interface VirtuosoBridgeSessionStartResult extends VirtuosoUiLaunchResult {
 	instanceId: string;
+	launchCwd: string;
 	sessionDir: string;
 	commandDir: string;
 	resultDir: string;
@@ -138,6 +139,7 @@ export interface RequiredVirtuosoUiLaunchRequest {
 	command: string;
 	args: string[];
 	cwd: string;
+	logDirectory: string;
 	desktopEnvironment: VirtuosoDesktopEnvironment;
 	dryRun: boolean;
 }
@@ -246,6 +248,7 @@ export async function startVirtuosoBridgeUi(
 		command,
 		args: ["-restore", script.value.scriptPath],
 		cwd: script.value.workDir,
+		logDirectory: join(script.value.workDir, ".virtuoso-agent", "logs"),
 		desktopEnvironment: desktopEnvironment.value,
 		dryRun: request.dryRun ?? false,
 	};
@@ -285,6 +288,7 @@ export async function startVirtuosoBridgeSession(
 		return launchContext;
 	}
 	const workDir = launchContext.value.workDir;
+	const launchCwd = launchContext.value.cdsLib ? dirname(launchContext.value.cdsLib) : workDir;
 	const desktopEnvironment = await resolveVirtuosoDesktopEnvironment(request, "virtuoso_session_start");
 	if (!desktopEnvironment.ok) {
 		return desktopEnvironment;
@@ -302,6 +306,7 @@ export async function startVirtuosoBridgeSession(
 	const metadata = await writeVirtuosoSessionMetadata({
 		sessionDir,
 		workDir,
+		launchCwd,
 		cdsLib: launchContext.value.cdsLib,
 	});
 	if (!metadata.ok) {
@@ -325,7 +330,8 @@ export async function startVirtuosoBridgeSession(
 	const launchRequest: RequiredVirtuosoUiLaunchRequest = {
 		command,
 		args: ["-restore", script.value.scriptPath],
-		cwd: script.value.workDir,
+		cwd: launchCwd,
+		logDirectory: join(sessionDir, "logs"),
 		desktopEnvironment: desktopEnvironment.value,
 		dryRun: request.dryRun ?? false,
 	};
@@ -345,7 +351,8 @@ export async function startVirtuosoBridgeSession(
 					processStartedAt: launched.startedAt,
 					mode: "ui",
 					state: "starting",
-					cwd: launched.cwd,
+					cwd: workDir,
+					launchCwd,
 					cdsLib: launchContext.value.cdsLib,
 					display: desktopEnvironment.value.display,
 					sessionDir,
@@ -374,7 +381,8 @@ export async function startVirtuosoBridgeSession(
 					processStartedAt: launched.startedAt,
 					mode: "ui",
 					state: "ready",
-					cwd: launched.cwd,
+					cwd: workDir,
+					launchCwd,
 					cdsLib: launchContext.value.cdsLib,
 					display: desktopEnvironment.value.display,
 					sessionDir,
@@ -393,6 +401,8 @@ export async function startVirtuosoBridgeSession(
 		}
 		return ok({
 			...launched,
+			cwd: workDir,
+			launchCwd: launched.cwd,
 			instanceId,
 			sessionDir,
 			commandDir: dirs.value.commandDir,
@@ -576,6 +586,7 @@ async function resolveVirtuosoLaunchContext(
 async function writeVirtuosoSessionMetadata(request: {
 	sessionDir: string;
 	workDir: string;
+	launchCwd: string;
 	cdsLib?: string;
 }): Promise<RuntimeResult<{ metadataPath: string }>> {
 	const metadataPath = join(request.sessionDir, "metadata.json");
@@ -585,6 +596,7 @@ async function writeVirtuosoSessionMetadata(request: {
 			`${JSON.stringify(
 				{
 					workDir: request.workDir,
+					launchCwd: request.launchCwd,
 					cdsLib: request.cdsLib,
 					createdAt: new Date().toISOString(),
 				},
@@ -675,15 +687,16 @@ function createDryRunUiLaunchResult(
 		startedAt: new Date().toISOString(),
 		detached: true,
 		dryRun: true,
-		stdoutLogPath: join(request.cwd, "virtuoso-ui.stdout.log"),
-		stderrLogPath: join(request.cwd, "virtuoso-ui.stderr.log"),
+		stdoutLogPath: join(request.logDirectory, "virtuoso.stdout.log"),
+		stderrLogPath: join(request.logDirectory, "virtuoso.stderr.log"),
 	};
 }
 
 const nodeVirtuosoUiLauncher: VirtuosoUiLauncher = {
 	async start(request) {
-		const stdoutLogPath = join(request.cwd, "virtuoso-ui.stdout.log");
-		const stderrLogPath = join(request.cwd, "virtuoso-ui.stderr.log");
+		await mkdir(request.logDirectory, { recursive: true });
+		const stdoutLogPath = join(request.logDirectory, "virtuoso.stdout.log");
+		const stderrLogPath = join(request.logDirectory, "virtuoso.stderr.log");
 		const stdoutFd = openSync(stdoutLogPath, "a");
 		const stderrFd = openSync(stderrLogPath, "a");
 		const child = spawn(request.command, request.args, {
@@ -868,6 +881,12 @@ async function readBridgeResult<TValue>(path: string): Promise<RuntimeResult<TVa
 		});
 	}
 	return ok(envelope.value);
+}
+
+export async function readVirtuosoBridgeSessionResult<TValue>(
+	path: string,
+): Promise<RuntimeResult<TValue> | undefined> {
+	return readBridgeResult<TValue>(path);
 }
 
 function parseBridgeEnvelope<TValue>(stdout: string): RuntimeResult<TValue> {

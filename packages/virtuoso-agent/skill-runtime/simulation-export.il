@@ -5,6 +5,18 @@ procedure(vaSimulationExportBoolean(value)
 	if(value then "true" else "false")
 )
 
+procedure(vaSimulationExportJsonStringList(values)
+	let((text separator)
+		text = ""
+		separator = ""
+		foreach(value values
+			text = strcat(text separator vaJsonString(value))
+			separator = ","
+		)
+		text
+	)
+)
+
 procedure(vaSimulationExportEmitError(errorType message resultPath)
 	vaSessionWriteResult(resultPath vaErrorEnvelope(errorType message))
 )
@@ -231,9 +243,9 @@ procedure(vaSimulationExportPrepareMaestro(
 	let((
 		existingSessions session closeSession tests enabledTests enabledStateCaptured topOceanPath topResult
 		includeTop includeTests includeSchematicInstances testItems separator index testName
-		exportTest exportSchematic testSession
+		exportTest exportSchematic testSession disabledTests disabledTestsJson
 		testDir singlePath sweepPath enabled topOceanJson
-		designLibrary designCell designView netlistResult netlistDir simInputFile netlistPath
+		designLibrary designCell designView netlistDir simInputFile netlistPath
 		includeOutputDefinitions includeOutputResults outputDefinitionsPath outputDefinitionsResult
 		setupDatabase historyData historyNames historyEntry outputResultsHistoryName
 		outputResultsPath outputResultsResult
@@ -291,12 +303,21 @@ procedure(vaSimulationExportPrepareMaestro(
 				tests = maeGetSetup(?typeName "tests" ?enabled 'all ?session session)
 				when(includeTests
 					enabledTests = maeGetSetup(?typeName "tests" ?enabled t ?session session)
+					disabledTests = setof(name tests not(member(name enabledTests)))
 					enabledStateCaptured = t
 				)
 				when(
 					(scope == "test" || (scope == "none" && requestedTestName != "")) &&
 					not(member(requestedTestName tests))
 					error("Could not find Maestro test %s.\n" requestedTestName)
+				)
+				when(
+					scope == "test" &&
+					not(member(requestedTestName enabledTests))
+					error(
+						"Maestro test %s is disabled; per-test runnable export requires an enabled test.\n"
+						requestedTestName
+					)
 				)
 				when(
 					requestedOutputTestName != "" &&
@@ -338,7 +359,9 @@ procedure(vaSimulationExportPrepareMaestro(
 				index = 0
 				foreach(testName tests
 					index = index + 1
-					exportTest = includeTests && (scope != "test" || testName == requestedTestName)
+					enabled = if(member(testName enabledTests) then t else nil)
+					exportTest = includeTests && enabled &&
+						(scope != "test" || testName == requestedTestName)
 					exportSchematic = includeSchematicInstances &&
 						(
 							not(member(scope list("test" "none"))) ||
@@ -370,10 +393,11 @@ procedure(vaSimulationExportPrepareMaestro(
 						vaSimulationExportWriteTestSweepOceanScript(
 							sweepPath library cell view session testName enabledTests
 						)
-						netlistResult = asiNetlist(testSession)
-						unless(netlistResult
-							error("Could not netlist Maestro test %s.\n" testName)
-						)
+						; asiNetlist only guarantees the lower-level design netlist.  A test
+						; which has never run may still lack the composed simulator input
+						; returned by asiGetSimInputFileName.  Execute the MAE flowchart
+						; through asiComposeSimInput so input.scs is freshly assembled.
+						asiExecuteFlowchart(testSession 'asiComposeSimInput)
 						netlistDir = asiGetNetlistDir(testSession)
 						simInputFile = asiGetSimInputFileName(testSession)
 						unless(netlistDir && simInputFile
@@ -384,7 +408,6 @@ procedure(vaSimulationExportPrepareMaestro(
 							error("Generated netlist does not exist for test %s: %s.\n" testName netlistPath)
 						)
 
-						enabled = if(member(testName enabledTests) then t else nil)
 						testItems = strcat(
 							testItems
 							separator
@@ -480,13 +503,15 @@ procedure(vaSimulationExportPrepareMaestro(
 				schematicInstancesJson = if(
 					schematicInstancesPath then vaJsonString(schematicInstancesPath) else "null"
 				)
+				disabledTestsJson = vaSimulationExportJsonStringList(disabledTests)
 				sprintf(
 					nil
-					"{\"scope\":%s,\"topOceanPath\":%s,\"virtuosoVersion\":%s,\"tests\":[%s],\"outputsMode\":%s,\"outputDefinitionsPath\":%s,\"outputResultsPath\":%s,\"outputResultsHistoryName\":%s,\"schematicInstancesMode\":%s,\"schematicInstancesPath\":%s}"
+					"{\"scope\":%s,\"topOceanPath\":%s,\"virtuosoVersion\":%s,\"tests\":[%s],\"disabledTests\":[%s],\"outputsMode\":%s,\"outputDefinitionsPath\":%s,\"outputResultsPath\":%s,\"outputResultsHistoryName\":%s,\"schematicInstancesMode\":%s,\"schematicInstancesPath\":%s}"
 					vaJsonString(scope)
 					topOceanJson
 					vaJsonString(getVersion(t))
 					testItems
+					disabledTestsJson
 					vaJsonString(outputsMode)
 					outputDefinitionsJson
 					outputResultsJson

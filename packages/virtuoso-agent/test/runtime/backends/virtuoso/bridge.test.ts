@@ -120,6 +120,35 @@ describe("Virtuoso SKILL bridge", () => {
 					"heartbeat.json",
 				)}")`,
 			);
+			expect(session.value.stdoutLogPath).toBe(join(sessionDir, "logs", "virtuoso.stdout.log"));
+			expect(session.value.stderrLogPath).toBe(join(sessionDir, "logs", "virtuoso.stderr.log"));
+		}
+	});
+
+	it("launches a managed session beside cds.lib while keeping artifacts in the requested project", async () => {
+		const libraryRoot = await mkdtemp(join(tmpdir(), "virtuoso-agent-library-root-"));
+		const projectDirectory = join(libraryRoot, "worklib");
+		const cdsLib = join(libraryRoot, "cds.lib");
+		const sessionDir = join(projectDirectory, ".session");
+		await mkdir(projectDirectory, { recursive: true });
+		await writeFile(cdsLib, "DEFINE worklib ./worklib\n", "utf8");
+
+		const session = await startVirtuosoUiSession({
+			workDir: projectDirectory,
+			cdsLib,
+			sessionDir,
+			dryRun: true,
+		});
+
+		expect(session.ok).toBe(true);
+		if (session.ok) {
+			expect(session.value.cwd).toBe(projectDirectory);
+			expect(session.value.launchCwd).toBe(libraryRoot);
+			expect(JSON.parse(await readFile(session.value.metadataPath, "utf8"))).toMatchObject({
+				workDir: projectDirectory,
+				launchCwd: libraryRoot,
+				cdsLib,
+			});
 		}
 	});
 

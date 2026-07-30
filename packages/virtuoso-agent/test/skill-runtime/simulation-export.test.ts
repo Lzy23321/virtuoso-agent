@@ -16,10 +16,12 @@ describe("simulation export SKILL contract", () => {
 		expect(source).toContain("vaSimulationExportWriteTestSweepOceanScript(");
 		expect(source).toContain("maeEnableTests(?all t ?enable nil ?session session)");
 		expect(source).toContain("maeEnableTests(?testNames list(testName) ?enable t ?session session)");
+		expect(source).toContain("exportTest = includeTests && enabled &&");
+		expect(source).toContain("Maestro test %s is disabled; per-test runnable export requires an enabled test.");
+		expect(source).toContain('"disabledTests\\":[%s]');
 		expect(source).toContain("vaSimulationExportRestoreEnabledTests(session enabledTests)");
 		expect(source).toContain('member(scope list("none" "all" "top" "tests" "test"))');
 		expect(source).toContain('(scope == "test" || (scope == "none" && requestedTestName != ""))');
-		expect(source).toContain('exportTest = includeTests && (scope != "test" || testName == requestedTestName)');
 		expect(source).toContain("procedure(vaSessionPrepareMaestroExportV7");
 		expect(source).toContain('member(outputsMode list("none" "definitions" "results" "all"))');
 		expect(source).toContain("axlOutputsExportToFile(session outputDefinitionsPath)");
@@ -46,7 +48,8 @@ describe("simulation export SKILL contract", () => {
 		expect(source).toContain("asiGetDesignLibName(testSession)");
 		expect(source).toContain("asiGetDesignCellName(testSession)");
 		expect(source).toContain("asiGetDesignViewName(testSession)");
-		expect(source).toContain("netlistResult = asiNetlist(testSession)");
+		expect(source).toContain("asiExecuteFlowchart(testSession 'asiComposeSimInput)");
+		expect(source).not.toContain("asiNetlist(testSession)");
 		expect(source).toContain("netlistDir = asiGetNetlistDir(testSession)");
 		expect(source).toContain("simInputFile = asiGetSimInputFileName(testSession)");
 		expect(source).toContain("when(closeSession");
